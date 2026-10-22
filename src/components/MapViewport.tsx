@@ -1,0 +1,392 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useAppStore } from '../store/useAppStore';
+import {
+  DEFAULT_ZOOM_LIMITS,
+  centeredOffset,
+  clamp,
+  clampOffset,
+  computeFitZoom,
+  screenToPixel,
+  zoomAt,
+} from '../lib/viewport';
+import type { ViewportSize } from '../lib/viewport';
+import { NODE_TYPE_COLORS } from '../lib/constants';
+import styles from './MapViewport.module.css';
+
+interface MapViewportProps {
+  /** 当前交互模式：浏览 pan / 添加节点 add */
+  mode: 'pan' | 'add';
+}
+
+const ZOOM_STEP = 1.15;
+
+/**
+ * 地图视口：负责底图渲染、缩放、拖动、以及把点击位置换算成原始图片像素坐标。
+ *
+ * 坐标系说明：
+ *   - 容器 .canvas 为定位基准；
+ *   - 内部 .layer 使用 transform: translate(offsetX, offsetY) scale(zoom)，
+ *     transform-origin 为 0 0，因此 屏幕坐标 = 像素坐标 * zoom + offset；
+ *   - 图片与 SVG 节点层都设置 width/height 为原始像素尺寸，并施加同一变换，
+ *     所以节点的像素坐标与底图像素严格一一对应，缩放/拖动/改变窗口大小时不会漂移。
+ */
+export function MapViewport({ mode }: MapViewportProps) {
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<ViewportSize>({ width: 0, height: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [hoverPixel, setHoverPixel] = useState<{ x: number; y: number } | null>(null);
+  const dragState = useRef<{ pointerId: number; startX: number; startY: number; offsetX: number; offsetY: number; moved: boolean } | null>(null);
+
+  const imageUrl = useAppStore((s) => s.imageUrl);
+  const image = useAppStore((s) => s.image);
+  const imageWidth = useAppStore((s) => s.imageWidth);
+  const imageHeight = useAppStore((s) => s.imageHeight);
+  const nodes = useAppStore((s) => s.nodes);
+  const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const camera = useAppStore((s) => s.camera);
+  const viewInitialized = useAppStore((s) => s.viewInitialized);
+  const setCamera = useAppStore((s) => s.setCamera);
+  const markViewInitialized = useAppStore((s) => s.markViewInitialized);
+  const addNodeAtPixel = useAppStore((s) => s.addNodeAtPixel);
+  const selectNode = useAppStore((s) => s.selectNode);
+  const pushNotice = useAppStore((s) => s.pushNotice);
+
+  // ---- 监听容器尺寸变化（含浏览器窗口缩放）----
+  // 注意：空状态时本组件不渲染画布（提前 return），因此必须依赖 imageUrl，
+  // 在画布真正挂载后重新绑定，否则尺寸会一直是 0，导致缩放/适配全部失效。
+  useLayoutEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const update = () => {
+      setSize({ width: el.clientWidth, height: el.clientHeight });
+    };
+    update();
+    // 使用 getBoundingClientRect 兜底，避免个别环境下 clientWidth 读到 0
+    const observer = new ResizeObserver(() => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.round(el.clientWidth || rect.width);
+      const height = Math.round(el.clientHeight || rect.height);
+      setSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    });
+    observer.observe(el);
+    window.addEventListener('resize', update);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, [imageUrl]);
+
+  // ---- 首次拿到图片/视口尺寸后，自动适配居中 ----
+  useEffect(() => {
+    if (!image || viewInitialized) return;
+    if (size.width <= 0 || size.height <= 0) return;
+    const fitZoom = clamp(computeFitZoom(imageWidth, imageHeight, size), DEFAULT_ZOOM_LIMITS.min, DEFAULT_ZOOM_LIMITS.max);
+    const offset = centeredOffset(imageWidth, imageHeight, fitZoom, size);
+    setCamera({ zoom: fitZoom, offsetX: offset.offsetX, offsetY: offset.offsetY });
+    markViewInitialized();
+  }, [image, viewInitialized, size, imageWidth, imageHeight, setCamera, markViewInitialized]);
+
+  // ---- 窗口尺寸变化时夹取平移量，保证图片不会完全跑出视口 ----
+  useEffect(() => {
+    if (!image || !viewInitialized) return;
+    if (size.width <= 0 || size.height <= 0) return;
+    const offsetX = clampOffset(camera.offsetX, imageWidth, size.width, camera.zoom);
+    const offsetY = clampOffset(camera.offsetY, imageHeight, size.height, camera.zoom);
+    if (offsetX !== camera.offsetX || offsetY !== camera.offsetY) {
+      setCamera({ ...camera, offsetX, offsetY });
+    }
+  }, [size, image, viewInitialized, camera, imageWidth, imageHeight, setCamera]);
+
+  const applyCamera = useCallback(
+    (zoom: number, offsetX: number, offsetY: number) => {
+      setCamera({
+        zoom,
+        offsetX: clampOffset(offsetX, imageWidth, size.width, zoom),
+        offsetY: clampOffset(offsetY, imageHeight, size.height, zoom),
+      });
+    },
+    [imageWidth, imageHeight, size.width, size.height, setCamera],
+  );
+
+  const zoomBy = useCallback(
+    (factor: number, anchorScreenX?: number, anchorScreenY?: number) => {
+      if (size.width <= 0 || size.height <= 0) return;
+      const anchorX = anchorScreenX ?? size.width / 2;
+      const anchorY = anchorScreenY ?? size.height / 2;
+      const next = zoomAt(anchorX, anchorY, { ...camera }, camera.zoom * factor, DEFAULT_ZOOM_LIMITS);
+      applyCamera(next.zoom, next.offsetX, next.offsetY);
+    },
+    [camera, applyCamera, size.width, size.height],
+  );
+
+  const fitToScreen = useCallback(() => {
+    if (!image || size.width <= 0 || size.height <= 0) return;
+    const fitZoom = clamp(computeFitZoom(imageWidth, imageHeight, size), DEFAULT_ZOOM_LIMITS.min, DEFAULT_ZOOM_LIMITS.max);
+    const offset = centeredOffset(imageWidth, imageHeight, fitZoom, size);
+    setCamera({ zoom: fitZoom, offsetX: offset.offsetX, offsetY: offset.offsetY });
+  }, [image, size, imageWidth, imageHeight, setCamera]);
+
+  const resetToActualSize = useCallback(() => {
+    if (!image || size.width <= 0 || size.height <= 0) return;
+    const zoom = 1;
+    const offset = centeredOffset(imageWidth, imageHeight, zoom, size);
+    applyCamera(zoom, offset.offsetX, offset.offsetY);
+  }, [image, size, imageWidth, imageHeight, applyCamera]);
+
+  // ---- 滚轮缩放（以鼠标位置为锚点）----
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!image) return;
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+      // 扣掉 1px 边框：我们的坐标系原点在“内容区”左上角，而非边框盒左上角
+      const anchorX = event.clientX - rect.left - el.clientLeft;
+      const anchorY = event.clientY - rect.top - el.clientTop;
+      const factor = event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+      const next = zoomAt(anchorX, anchorY, { ...camera }, camera.zoom * factor, DEFAULT_ZOOM_LIMITS);
+      setCamera({
+        zoom: next.zoom,
+        offsetX: clampOffset(next.offsetX, imageWidth, size.width, next.zoom),
+        offsetY: clampOffset(next.offsetY, imageHeight, size.height, next.zoom),
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [image, camera, imageWidth, imageHeight, size.width, size.height, setCamera]);
+
+  const toPixel = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = canvasRef.current;
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      // 同样扣掉边框，保证点击落点、悬停读数与滚轮锚点使用同一套原点
+      const x = clientX - rect.left - el.clientLeft;
+      const y = clientY - rect.top - el.clientTop;
+      return screenToPixel(x, y, camera);
+    },
+    [camera],
+  );
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!image) return;
+    if (event.button !== 0 && event.button !== 1) return;
+    // 添加模式下点击画布 = 添加节点，不进入拖动
+    if (mode === 'add' && event.button === 0) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    el.setPointerCapture(event.pointerId);
+    dragState.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: camera.offsetX,
+      offsetY: camera.offsetY,
+      moved: false,
+    };
+    setIsDragging(true);
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!image) return;
+    const pixel = toPixel(event.clientX, event.clientY);
+    if (pixel) {
+      setHoverPixel({
+        x: Math.round(pixel.x),
+        y: Math.round(pixel.y),
+      });
+    }
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    if (!drag.moved && Math.hypot(dx, dy) > 3) {
+      drag.moved = true;
+    }
+    if (!drag.moved) return;
+    setCamera({
+      zoom: camera.zoom,
+      offsetX: clampOffset(drag.offsetX + dx, imageWidth, size.width, camera.zoom),
+      offsetY: clampOffset(drag.offsetY + dy, imageHeight, size.height, camera.zoom),
+    });
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragState.current;
+    const isSamePointer = drag !== null && drag.pointerId === event.pointerId;
+    if (isSamePointer) {
+      dragState.current = null;
+      setIsDragging(false);
+    }
+    // 添加模式下，只把“未发生拖动的左键抬起”视为一次点击
+    const isAddClick =
+      event.type === 'pointerup' && mode === 'add' && event.button === 0 && drag === null;
+    if (isAddClick) {
+      const pixel = toPixel(event.clientX, event.clientY);
+      if (!pixel) return;
+      const result = addNodeAtPixel(pixel.x, pixel.y);
+      if (result.ok && result.node) {
+        pushNotice(
+          'success',
+          `已在像素坐标 (${result.node.point.x}, ${result.node.point.y}) 添加节点“${result.node.name}”`,
+        );
+      } else {
+        pushNotice('error', result.error ?? '添加节点失败');
+      }
+    }
+  };
+
+  if (!image || !imageUrl) {
+    return (
+      <div className={styles.emptyState} data-testid="map-empty">
+        <div className={styles.emptyIcon} aria-hidden="true">🗺️</div>
+        <h2 className={styles.emptyTitle}>尚未加载地图</h2>
+        <p className={styles.emptyText}>
+          请在左侧“地图底图”区域点击 <strong>上传地图图片</strong>，选择本地的天河体育中心周边地图。
+          <br />
+          本系统不会联网获取地图，底图完全来自你上传的文件。
+        </p>
+      </div>
+    );
+  }
+
+  const pixelReadout = hoverPixel
+    ? hoverPixel.x < 0 || hoverPixel.y < 0 || hoverPixel.x > imageWidth || hoverPixel.y > imageHeight
+      ? `超出地图范围 (${hoverPixel.x}, ${hoverPixel.y})`
+      : `像素坐标 X=${hoverPixel.x} Y=${hoverPixel.y}`
+    : '将鼠标移到地图上查看像素坐标';
+
+  return (
+    <div className={styles.wrap}>
+      <div className={styles.toolbar} role="toolbar" aria-label="地图视图工具">
+        <button type="button" onClick={() => zoomBy(1 / ZOOM_STEP)} title="缩小" aria-label="缩小">−</button>
+        <span className={styles.zoomValue} data-testid="zoom-value">{Math.round(camera.zoom * 100)}%</span>
+        <button type="button" onClick={() => zoomBy(ZOOM_STEP)} title="放大" aria-label="放大">＋</button>
+        <span className={styles.divider} />
+        <button type="button" onClick={fitToScreen}>适配窗口</button>
+        <button type="button" onClick={resetToActualSize}>原始像素 1:1</button>
+        <span className={styles.divider} />
+        <span className={styles.meta} data-testid="image-meta">
+          {image.fileName} · {imageWidth}×{imageHeight}px
+        </span>
+      </div>
+
+      <div
+        ref={canvasRef}
+        className={[
+          styles.canvas,
+          mode === 'add' ? styles.canvasAdd : styles.canvasPan,
+          isDragging ? styles.canvasDragging : '',
+        ].join(' ')}
+        data-testid="map-canvas"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onPointerLeave={() => setHoverPixel(null)}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <div
+          className={styles.layer}
+          style={{
+            width: imageWidth,
+            height: imageHeight,
+            transform: `translate(${camera.offsetX}px, ${camera.offsetY}px) scale(${camera.zoom})`,
+          }}
+          data-testid="map-layer"
+          data-zoom={camera.zoom}
+          data-offset-x={camera.offsetX}
+          data-offset-y={camera.offsetY}
+        >
+          <img
+            src={imageUrl}
+            alt="用户上传的地图底图"
+            className={styles.image}
+            draggable={false}
+            width={imageWidth}
+            height={imageHeight}
+          />
+
+          {/* 节点层：与底图共用同一 transform，坐标单位为原始图片像素 */}
+          <svg
+            className={styles.nodeLayer}
+            viewBox={`0 0 ${imageWidth} ${imageHeight}`}
+            width={imageWidth}
+            height={imageHeight}
+            data-testid="node-layer"
+          >
+            {nodes.map((node) => {
+              const isSelected = node.id === selectedNodeId;
+              // 标记尺寸随缩放反向补偿，保持屏幕上大小恒定、易点击
+              const r = 9 / camera.zoom;
+              const strokeW = 2.5 / camera.zoom;
+              const fontSize = 12 / camera.zoom;
+              return (
+                <g
+                  key={node.id}
+                  data-node-id={node.id}
+                  data-node-marker="true"
+                  data-pixel-x={node.point.x}
+                  data-pixel-y={node.point.y}
+                  className={styles.nodeGroup}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    selectNode(node.id);
+                  }}
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={`节点 ${node.name} (${node.point.x}, ${node.point.y})`}
+                >
+                  {isSelected && (
+                    <circle
+                      cx={node.point.x}
+                      cy={node.point.y}
+                      r={r + 5 / camera.zoom}
+                      fill="none"
+                      stroke="#fbbf24"
+                      strokeWidth={3 / camera.zoom}
+                    />
+                  )}
+                  <circle
+                    cx={node.point.x}
+                    cy={node.point.y}
+                    r={r}
+                    fill={NODE_TYPE_COLORS[node.type]}
+                    stroke="#ffffff"
+                    strokeWidth={strokeW}
+                  />
+                  <text
+                    x={node.point.x + r + 4 / camera.zoom}
+                    y={node.point.y + fontSize / 3}
+                    fontSize={fontSize}
+                    className={styles.nodeLabel}
+                    paintOrder="stroke"
+                    stroke="#ffffff"
+                    strokeWidth={3 / camera.zoom}
+                  >
+                    {node.name}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+
+      <div className={styles.statusBar}>
+        <span className={styles.statusPixel} data-testid="pixel-readout">{pixelReadout}</span>
+        <span className={styles.statusHint}>
+          {mode === 'add'
+            ? '点击模式：在地图上单击即可在对应像素位置添加节点'
+            : '拖动模式：按住鼠标拖动平移，滚轮以鼠标为中心缩放（点击节点可选中）'}
+        </span>
+      </div>
+      {mode === 'add' && (
+        <div className={styles.addBanner} data-testid="add-mode-banner">
+          ➕ 添加节点模式已开启：单击地图放置节点；完成后请切回“拖动 / 浏览”模式以免误加
+        </div>
+      )}
+    </div>
+  );
+}

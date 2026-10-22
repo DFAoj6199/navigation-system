@@ -1,0 +1,27 @@
+node_modules
+dist
+dist-ssr
+*.local
+.vite
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+
+# Test / coverage
+coverage
+test-results
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo
+
+# 用户自行上传的地图底图不应进入版本库（地图仅由用户上传）
+map-images/
