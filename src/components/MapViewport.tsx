@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import {
   DEFAULT_ZOOM_LIMITS,
@@ -10,8 +10,7 @@ import {
   zoomAt,
 } from '../lib/viewport';
 import type { ViewportSize } from '../lib/viewport';
-import { NODE_TYPE_COLORS } from '../lib/constants';
-import type { MapNode, PixelPoint } from '../types';
+import { nodeFillColor, type PathNodeRole } from '../lib/constants';
 import { RoadLayer } from './RoadLayer';
 import styles from './MapViewport.module.css';
 
@@ -82,6 +81,23 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   const scalePointB = useAppStore((s) => s.scalePointB);
   const scaleNextPoint = useAppStore((s) => s.scaleNextPoint);
   const pickScalePoint = useAppStore((s) => s.pickScalePoint);
+
+  // 寻路角色：起点 / 终点 / 当前所选路线经过的节点
+  // 只读取已有状态，不修改任何节点或道路数据
+  const routeNodeIds = useMemo(
+    () => new Set(search.highlightedPolyline.length > 0 ? search.highlightedNodeIds : []),
+    [search.highlightedPolyline.length, search.highlightedNodeIds],
+  );
+
+  /** 计算某个节点在寻路结果中的角色 */
+  const nodeRole = (nodeId: string): PathNodeRole => {
+    if (!startNodeId && !endNodeId) return 'normal';
+    if (nodeId === startNodeId && nodeId === endNodeId) return 'start';
+    if (nodeId === startNodeId) return 'start';
+    if (nodeId === endNodeId) return 'end';
+    if (routeNodeIds.has(nodeId)) return 'onRoute';
+    return 'normal';
+  };
 
   // 校准点只在“比例尺”页签可见：离开该页签即暂时隐藏（比例尺数据本身不受影响）
   const showScaleLayer = activeTab === 'scale' && Boolean(scalePointA || scalePointB);
@@ -430,17 +446,10 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
               draftFromNodeId={draft?.fromNodeId}
               draftToNodeId={draft?.toNodeId}
               editable={mode === 'pan' || mode === 'draw'}
+              highlightedRoadIds={search.highlightedRoadIds}
               onSelectRoad={selectRoad}
               onDragPointStart={handleDragRoadPointStart}
               onDragDraftPointStart={handleDragDraftPointStart}
-            />
-            {/* 寻路结果高亮：与底图共用同一 transform，缩放拖动严格对齐 */}
-            <PathHighlightLayer
-              polyline={search.highlightedPolyline}
-              zoom={camera.zoom}
-              startNodeId={startNodeId}
-              endNodeId={endNodeId}
-              nodes={nodes}
             />
             {/* 比例尺校准点与连线：仅在“比例尺”页签显示，切到其他页签暂时隐藏 */}
             {showScaleLayer && (
@@ -474,8 +483,11 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
 
             {nodes.map((node) => {
               const isSelected = node.id === selectedNodeId;
+              // 区分普通节点 / 起点 / 终点 / 所选路线上的节点
+              const role = nodeRole(node.id);
+              const onRouteNode = node.id === startNodeId || node.id === endNodeId || routeNodeIds.has(node.id);
               // 标记尺寸随缩放反向补偿，保持屏幕上大小恒定、易点击
-              const r = 9 / camera.zoom;
+              const r = (onRouteNode ? 11 : 9) / camera.zoom;
               const strokeW = 2.5 / camera.zoom;
               const fontSize = 12 / camera.zoom;
               return (
@@ -483,6 +495,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
                   key={node.id}
                   data-node-id={node.id}
                   data-node-marker="true"
+                  data-node-role={role}
                   data-pixel-x={node.point.x}
                   data-pixel-y={node.point.y}
                   className={styles.nodeGroup}
@@ -504,11 +517,22 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
                       strokeWidth={3 / camera.zoom}
                     />
                   )}
+                  {onRouteNode && (
+                    <circle
+                      cx={node.point.x}
+                      cy={node.point.y}
+                      r={r + 4 / camera.zoom}
+                      fill="none"
+                      stroke={nodeFillColor(node.type, role)}
+                      strokeWidth={2.5 / camera.zoom}
+                      opacity={0.55}
+                    />
+                  )}
                   <circle
                     cx={node.point.x}
                     cy={node.point.y}
                     r={r}
-                    fill={NODE_TYPE_COLORS[node.type]}
+                    fill={nodeFillColor(node.type, role)}
                     stroke="#ffffff"
                     strokeWidth={strokeW}
                   />
@@ -558,75 +582,5 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
         </div>
       )}
     </div>
-  );
-}
-
-interface PathHighlightLayerProps {
-  polyline: PixelPoint[];
-  zoom: number;
-  startNodeId: string;
-  endNodeId: string;
-  nodes: MapNode[];
-}
-
-/**
- * 寻路结果高亮层。
- *
- * 点坐标全部是原始图片像素，与底图共用同一个 transform，
- * 因此缩放、拖动时高亮路线始终贴合道路，不会漂移。
- * 线宽/标记尺寸按 1/zoom 反向补偿，保持屏幕上大小恒定。
- */
-function PathHighlightLayer({ polyline, zoom, startNodeId, endNodeId, nodes }: PathHighlightLayerProps) {
-  if (polyline.length < 2) {
-    // 起终点相同（零长度路径）：只标出起终点，不画线
-    if (startNodeId && startNodeId === endNodeId) {
-      const node = nodes.find((n) => n.id === startNodeId);
-      if (!node) return null;
-      return (
-        <g data-testid="path-highlight">
-          <circle
-            cx={node.point.x}
-            cy={node.point.y}
-            r={14 / zoom}
-            fill="none"
-            stroke="#7c3aed"
-            strokeWidth={3 / zoom}
-            strokeDasharray={`${4 / zoom} ${3 / zoom}`}
-          />
-        </g>
-      );
-    }
-    return null;
-  }
-
-  const pointsAttr = polyline.map((p) => `${p.x},${p.y}`).join(' ');
-  const first = polyline[0];
-  const last = polyline[polyline.length - 1];
-
-  return (
-    <g data-testid="path-highlight" data-point-count={polyline.length} data-points={pointsAttr}>
-      {/* 外发光底色，保证在任意底图上都清晰可见 */}
-      <polyline
-        points={pointsAttr}
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth={12 / zoom}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity={0.85}
-      />
-      <polyline
-        points={pointsAttr}
-        fill="none"
-        stroke="#7c3aed"
-        strokeWidth={7 / zoom}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeDasharray={`${16 / zoom} ${7 / zoom}`}
-      />
-      {/* 起点/终点标记 */}
-      <circle cx={first.x} cy={first.y} r={11 / zoom} fill="#7c3aed" stroke="#ffffff" strokeWidth={3 / zoom} data-highlight="start" />
-      <circle cx={last.x} cy={last.y} r={11 / zoom} fill="#db2777" stroke="#ffffff" strokeWidth={3 / zoom} data-highlight="end" />
-    </g>
   );
 }

@@ -851,17 +851,15 @@ async function main() {
     // ---------- 30. 高亮路线与道路严格对齐（缩放/拖动后仍对齐） ----------
     const measureHighlightAlignment = async () =>
       page.evaluate(() => {
-        const g = document.querySelector('[data-testid="path-highlight"]');
-        if (!g) return { ok: false, err: Infinity, detail: '未找到高亮层' };
-        const line = g.querySelector('polyline');
-        const m = line.getScreenCTM();
-        const map = (x, y) => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
-        const pts = line
-          .getAttribute('points')
-          .trim()
-          .split(/\s+/)
-          .map((s) => s.split(',').map(Number))
-          .map(([x, y]) => ({ px: x, py: y, ...map(x, y) }));
+        // 阶段5 起，高亮由道路图层按“道路真实折线”绘制（不再是独立的 PathHighlightLayer），
+        // 因此对每条高亮道路折线的首末点，都校验其屏幕位置与对应节点圆心严格重合。
+        const groups = [...document.querySelectorAll('[data-road-highlighted="true"]')];
+        if (groups.length === 0) return { ok: false, err: Infinity, detail: '未找到高亮道路' };
+        const allLines = groups
+          .map((g) => g.querySelector('[data-testid="road-highlight-line"]'))
+          .filter(Boolean);
+        if (allLines.length === 0) return { ok: false, err: Infinity, detail: '未找到高亮折线' };
+
         const markers = [...document.querySelectorAll('[data-node-marker]')].map((mk) => {
           const c = mk.querySelector('circle:not([fill="none"])');
           const b = c.getBoundingClientRect();
@@ -872,18 +870,31 @@ async function main() {
             cy: b.top + b.height / 2,
           };
         });
+
         const errs = [];
-        for (const pt of [pts[0], pts[pts.length - 1]]) {
-          const mk = markers.find((x) => x.px === pt.px && x.py === pt.py);
-          if (!mk) {
-            errs.push('端点未与节点重合');
-            continue;
+        let checked = 0;
+        for (const line of allLines) {
+          const m = line.getScreenCTM();
+          const map = (x, y) => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+          const pts = line
+            .getAttribute('points')
+            .trim()
+            .split(/\s+/)
+            .map((t) => t.split(',').map(Number))
+            .map(([x, y]) => ({ px: x, py: y, ...map(x, y) }));
+          for (const pt of [pts[0], pts[pts.length - 1]]) {
+            checked += 1;
+            const mk = markers.find((x) => x.px === pt.px && x.py === pt.py);
+            if (!mk) {
+              errs.push('端点未与节点重合');
+              continue;
+            }
+            errs.push(Math.hypot(pt.x - mk.cx, pt.y - mk.cy));
           }
-          errs.push(Math.hypot(pt.x - mk.cx, pt.y - mk.cy));
         }
         const numeric = errs.filter((e) => typeof e === 'number');
         const err = numeric.length ? Math.max(...numeric) : Infinity;
-        return { ok: errs.length === 2 && err < 1.5, err, detail: errs.join(',') };
+        return { ok: checked > 0 && errs.length === checked && err < 1.5, err, detail: errs.join(',') };
       });
 
     await page.click('[data-testid="tab-paths"]');
@@ -1205,7 +1216,257 @@ async function main() {
 
     await page.screenshot({ path: path.join(SHOT_DIR, '11-scale.png') });
 
-    // ---------- 40. 控制台无错误 ----------
+    // ==========================================================
+    // 阶段 5：路线可视化与搜索结果展示
+    // ==========================================================
+
+    // 建一个 A->B 有两条路线的图：
+    //   A(300,300) --中间点(300,600)(1100,600)--> B(1100,300)  绕行，长度 300+800+300=1400
+    //   A -> C(700,800) -> B                                  长度 √(400²+500²)×2=640.3×2=1280.6（更短）
+    await clearAllNodes();
+    await addNodeByName(300, 300, 'VA');
+    await addNodeByName(1100, 300, 'VB');
+    await addNodeByName(700, 800, 'VC');
+    await page.click('[data-testid="view-fit"]');
+    await page.waitForTimeout(250);
+    await connectNodes('VA', 'VB', [[300, 600], [1100, 600]]);
+    await connectNodes('VA', 'VC');
+    await connectNodes('VC', 'VB');
+
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(200);
+    const vOpts = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', vOpts.find((o) => o.t === 'VA').v);
+    await page.selectOption('[data-testid="path-end-select"]', vOpts.find((o) => o.t === 'VB').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(450);
+
+    /** 读取地图片层上的可视化状态 */
+    const readVisual = async () =>
+      page.evaluate(() => {
+        const roleOf = {};
+        for (const mk of document.querySelectorAll('[data-node-marker]')) {
+          const label = mk.getAttribute('aria-label') ?? '';
+          const m = label.match(/节点 (\S+)/);
+          const name = m ? m[1] : label;
+          roleOf[name] = {
+            role: mk.getAttribute('data-node-role'),
+            fill: mk.querySelector('circle:not([fill="none"])')?.getAttribute('fill'),
+          };
+        }
+        const highlighted = [...document.querySelectorAll('[data-road-highlighted="true"]')].map((g) => ({
+          roadPoints: g.getAttribute('data-points'),
+          hlPoints: g.querySelector('[data-testid="road-highlight-line"]')?.getAttribute('points'),
+          pointCount: g.getAttribute('data-point-count'),
+        }));
+        return {
+          roleOf,
+          highlighted,
+          searchInfo: document.querySelector('[data-testid="path-search-info"]')?.innerText.replace(/\n/g, ' ').trim() ?? null,
+          noPath: document.querySelector('[data-testid="path-no-result"]')?.textContent?.trim() ?? null,
+          itemCount: document.querySelectorAll('[data-testid="path-item"]').length,
+        };
+      });
+
+    let vis = await readVisual();
+
+    // ---------- 41. 起点/终点/路线节点/普通节点配色区分 ----------
+    const colors = new Set(
+      Object.values(vis.roleOf).map((v) => v.fill),
+    );
+    record(
+      '起点、终点、路线节点与普通节点颜色互不相同',
+      vis.roleOf.VA?.role === 'start' &&
+        vis.roleOf.VB?.role === 'end' &&
+        vis.roleOf.VC?.role === 'onRoute' &&
+        vis.roleOf.VA.fill === '#059669' &&
+        vis.roleOf.VB.fill === '#db2777' &&
+        vis.roleOf.VC.fill === '#7c3aed' &&
+        colors.size === 3,
+      `VA=${vis.roleOf.VA?.role}/${vis.roleOf.VA?.fill}，VB=${vis.roleOf.VB?.role}/${vis.roleOf.VB?.fill}，VC=${vis.roleOf.VC?.role}/${vis.roleOf.VC?.fill}`,
+    );
+
+    // ---------- 42. 结果区标注搜索起终点 ----------
+    record(
+      '结果区明确标注本次搜索的起点与终点',
+      (vis.searchInfo ?? '').includes('起点') &&
+        (vis.searchInfo ?? '').includes('VA') &&
+        (vis.searchInfo ?? '').includes('终点') &&
+        (vis.searchInfo ?? '').includes('VB'),
+      `标注=“${vis.searchInfo}”`,
+    );
+
+    // ---------- 43. 默认高亮最短路径，且高亮复用真实折线 ----------
+    const shortestSeq = (await page.textContent('[data-testid="shortest-sequence"]')).trim();
+    record(
+      '默认高亮最短路径 VA -> VC -> VB（1280.6 < 1400）',
+      shortestSeq === 'VA -> VC -> VB' && vis.highlighted.length === 2,
+      `最短路径=“${shortestSeq}”，高亮道路数=${vis.highlighted.length}`,
+    );
+    record(
+      '高亮折线复用道路真实折线坐标（逐点相同，非端点直线）',
+      vis.highlighted.every((h) => h.roadPoints === h.hlPoints),
+      `高亮=${JSON.stringify(vis.highlighted.map((h) => h.hlPoints).join(' | '))}`,
+    );
+
+    // ---------- 44. 切换到另一条路线，高亮随之变化且含中间点 ----------
+    await page.locator('[data-testid="path-item"]').nth(1).click();
+    await page.waitForTimeout(420);
+    vis = await readVisual();
+    const secondSeq = (
+      await page.locator('[data-testid="path-item"]').nth(1).locator('[data-testid="path-sequence"]').textContent()
+    ).trim();
+    const bypass = vis.highlighted.find((h) => h.pointCount === '2');
+    record(
+      '选择不同路线后高亮随之切换（绕行路线含 2 个中间点，不是直线）',
+      vis.highlighted.length === 1 &&
+        Boolean(bypass) &&
+        bypass.hlPoints === bypass.roadPoints &&
+        bypass.hlPoints.split(' ').length === 4,
+      `选中=“${secondSeq}”，高亮折线点数=${bypass ? bypass.hlPoints.split(' ').length : 0}（含端点共 4 点），折线=${bypass?.hlPoints}`,
+    );
+
+    // 切回第一条，验证可来回切换
+    await page.locator('[data-testid="path-item"]').nth(0).click();
+    await page.waitForTimeout(380);
+    const backVis = await readVisual();
+    record(
+      '可在多条路线之间来回切换高亮',
+      backVis.highlighted.length === 2 &&
+        backVis.highlighted.every((h) => h.roadPoints === h.hlPoints),
+      `切回后高亮道路数=${backVis.highlighted.length}`,
+    );
+
+    // ---------- 45. 切换高亮不修改底层数据 ----------
+    const dataBefore = await page.evaluate(() => ({
+      nodes: [...document.querySelectorAll('[data-node-marker]')].map((m) => m.getAttribute('data-pixel-x') + ',' + m.getAttribute('data-pixel-y')).join('|'),
+      roads: [...document.querySelectorAll('[data-road-line="true"]')].map((g) => g.getAttribute('data-points')).join('|'),
+      lengths: [...document.querySelectorAll('[data-testid="path-item"]')].map((li) => li.getAttribute('data-length')).join('|'),
+    }));
+    await page.locator('[data-testid="path-item"]').nth(1).click();
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid="path-item"]').nth(0).click();
+    await page.waitForTimeout(300);
+    const dataAfter = await page.evaluate(() => ({
+      nodes: [...document.querySelectorAll('[data-node-marker]')].map((m) => m.getAttribute('data-pixel-x') + ',' + m.getAttribute('data-pixel-y')).join('|'),
+      roads: [...document.querySelectorAll('[data-road-line="true"]')].map((g) => g.getAttribute('data-points')).join('|'),
+      lengths: [...document.querySelectorAll('[data-testid="path-item"]')].map((li) => li.getAttribute('data-length')).join('|'),
+    }));
+    record(
+      '切换路线高亮不修改节点、道路或距离数据',
+      dataBefore.nodes === dataAfter.nodes &&
+        dataBefore.roads === dataAfter.roads &&
+        dataBefore.lengths === dataAfter.lengths,
+      `节点/道路/距离 前后一致=${dataBefore.nodes === dataAfter.nodes && dataBefore.roads === dataAfter.roads && dataBefore.lengths === dataAfter.lengths}`,
+    );
+
+    // ---------- 46. 缩放拖动后高亮仍与底层道路重合 ----------
+    const measureHighlightOverlap = async () =>
+      page.evaluate(() => {
+        const groups = [...document.querySelectorAll('[data-road-highlighted="true"]')];
+        if (groups.length === 0) return { ok: false, err: Infinity, count: 0 };
+        let worst = 0;
+        for (const g of groups) {
+          const line = g.querySelector('[data-testid="road-highlight-line"]');
+          const roadLine = g.querySelector('polyline[stroke="#0f766e"], polyline[stroke="#b45309"]');
+          if (!line || !roadLine) return { ok: false, err: Infinity, count: groups.length };
+          // 直接比较两份 points 属性：完全一致说明用的是同一条真实折线
+          if (line.getAttribute('points') !== roadLine.getAttribute('points')) {
+            return { ok: false, err: Infinity, count: groups.length };
+          }
+          // 再用屏幕坐标比对，确认渲染后仍重合
+          const m1 = line.getScreenCTM();
+          const m2 = roadLine.getScreenCTM();
+          const pts1 = line.getAttribute('points').trim().split(/\s+/).map((p) => p.split(',').map(Number));
+          for (const [x, y] of pts1) {
+            const a = { x: m1.a * x + m1.c * y + m1.e, y: m1.b * x + m1.d * y + m1.f };
+            const b = { x: m2.a * x + m2.c * y + m2.e, y: m2.b * x + m2.d * y + m2.f };
+            worst = Math.max(worst, Math.hypot(a.x - b.x, a.y - b.y));
+          }
+        }
+        return { ok: worst < 0.001, err: worst, count: groups.length };
+      });
+
+    const ovBefore = await measureHighlightOverlap();
+    const camP5 = await readCamera(page);
+    await page.mouse.move(camP5.canvasLeft + 520, camP5.canvasTop + 320);
+    for (let i = 0; i < 3; i += 1) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(200);
+    const ovZoom = await measureHighlightOverlap();
+    const camP5b = await readCamera(page);
+    await page.mouse.move(camP5b.canvasLeft + 620, camP5b.canvasTop + 360);
+    await page.mouse.down();
+    await page.mouse.move(camP5b.canvasLeft + 470, camP5b.canvasTop + 250, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    const ovDrag = await measureHighlightOverlap();
+    record(
+      '缩放、拖动后高亮路线仍与底层道路完全重合',
+      ovBefore.ok && ovZoom.ok && ovDrag.ok,
+      `缩放前=${ovBefore.err.toFixed(4)}px，缩放后=${ovZoom.err.toFixed(4)}px，拖动后=${ovDrag.err.toFixed(4)}px，高亮道路数=${ovDrag.count}`,
+    );
+
+    await page.screenshot({ path: path.join(SHOT_DIR, '12-path-visual.png') });
+
+    // ---------- 47. 无路径时清除旧高亮并显示“当前无路径” ----------
+    // 新增一个孤立节点，把它设为终点
+    await addNodeByName(1450, 1100, 'VZ');
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(200);
+    const vOpts2 = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', vOpts2.find((o) => o.t === 'VA').v);
+    await page.selectOption('[data-testid="path-end-select"]', vOpts2.find((o) => o.t === 'VZ').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(450);
+    vis = await readVisual();
+    record(
+      '无路径时显示“当前无路径”并清除旧路线高亮',
+      vis.noPath === '当前无路径' && vis.highlighted.length === 0 && vis.itemCount === 0,
+      `提示=“${vis.noPath}”，残留高亮道路数=${vis.highlighted.length}，结果条目=${vis.itemCount}`,
+    );
+
+    // ---------- 48. 查看模式隐藏节点与道路管理列表 ----------
+    await page.click('[data-testid="tab-view"]');
+    await page.waitForTimeout(220);
+    const hiddenInView = await page.evaluate(() => ({
+      nodeList: document.querySelectorAll('[data-testid="node-item"]').length,
+      roadList: document.querySelectorAll('[data-testid="road-item"]').length,
+      nodePanel: document.querySelectorAll('[data-testid="node-list"]').length,
+      roadPanel: document.querySelectorAll('[data-testid="road-panel"]').length,
+    }));
+    await page.click('[data-testid="tab-nodes"]');
+    await page.waitForTimeout(220);
+    const shownInNodes = await page.evaluate(() => ({
+      nodeList: document.querySelectorAll('[data-testid="node-item"]').length,
+      roadPanel: document.querySelectorAll('[data-testid="road-panel"]').length,
+    }));
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(220);
+    const shownInRoads = await page.evaluate(() => ({
+      nodeList: document.querySelectorAll('[data-testid="node-item"]').length,
+      roadPanel: document.querySelectorAll('[data-testid="road-panel"]').length,
+    }));
+    record(
+      '查看模式隐藏节点与道路管理列表，进入对应管理模式才显示',
+      hiddenInView.nodeList === 0 &&
+        hiddenInView.roadList === 0 &&
+        hiddenInView.nodePanel === 0 &&
+        hiddenInView.roadPanel === 0 &&
+        shownInNodes.nodeList > 0 &&
+        shownInNodes.roadPanel === 0 &&
+        shownInRoads.roadPanel > 0 &&
+        shownInRoads.nodeList === 0,
+      `查看模式 节点列表=${hiddenInView.nodeList}/道路面板=${hiddenInView.roadPanel}；节点页签 节点=${shownInNodes.nodeList}/道路面板=${shownInNodes.roadPanel}；道路页签 道路面板=${shownInRoads.roadPanel}/节点=${shownInRoads.nodeList}`,
+    );
+
+    // ---------- 49. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');
   } finally {

@@ -73,10 +73,17 @@ export interface SearchState {
   shortest: PathResult | null;
   /** 起终点相同标记 */
   sameEndpoint: boolean;
+  /** 本次搜索实际使用的起点节点 id（用于在结果区标注） */
+  searchedStartId: string;
+  /** 本次搜索实际使用的终点节点 id */
+  searchedEndId: string;
   /** 本次搜索实际使用的限制，便于在界面上明示 */
   limits: SearchLimits;
   /** 当前在地图上高亮的路径（点击结果条目后设置） */
   highlightedRoadIds: string[];
+  /** 高亮路径经过的节点 id（含首尾），用于节点配色 */
+  highlightedNodeIds: string[];
+  /** 高亮路径的完整折线（复用道路真实折线坐标） */
   highlightedPolyline: PixelPoint[];
 }
 
@@ -205,8 +212,11 @@ export function createInitialSearchState(limits: SearchLimits = DEFAULT_SEARCH_L
     simple: null,
     shortest: null,
     sameEndpoint: false,
+    searchedStartId: '',
+    searchedEndId: '',
     limits,
     highlightedRoadIds: [],
+    highlightedNodeIds: [],
     highlightedPolyline: [],
   };
 }
@@ -583,6 +593,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       search: {
         ...get().search,
         highlightedRoadIds: path ? [...path.roadIds] : [],
+        highlightedNodeIds: path ? [...path.nodeIds] : [],
         highlightedPolyline: path ? path.polyline.map((p) => ({ x: p.x, y: p.y })) : [],
       },
     }),
@@ -628,9 +639,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         simple: simple.result,
         shortest: shortest.result.path,
         sameEndpoint,
+        searchedStartId: startNodeId,
+        searchedEndId: endNodeId,
         limits: effectiveLimits,
         // 默认高亮最短路径，便于直接在地图上看到结果
         highlightedRoadIds: shortest.result.path ? [...shortest.result.path.roadIds] : [],
+        highlightedNodeIds: shortest.result.path ? [...shortest.result.path.nodeIds] : [],
         highlightedPolyline: shortest.result.path
           ? shortest.result.path.polyline.map((p) => ({ x: p.x, y: p.y }))
           : [],

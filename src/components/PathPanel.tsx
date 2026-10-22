@@ -70,6 +70,13 @@ export function PathPanel() {
     });
   }, [search.simple]);
 
+  /** 本次搜索实际使用的起终点名称（来自结果快照，不受下拉框后续改动影响） */
+  const searchedStartName =
+    nodes.find((n) => n.id === search.searchedStartId)?.name ?? '（已删除）';
+  const searchedEndName =
+    nodes.find((n) => n.id === search.searchedEndId)?.name ?? '（已删除）';
+  const showSearchInfo = search.status === 'found' || search.status === 'no-path';
+
   const isHighlighted = (path: PathResult) =>
     path.roadIds.length === search.highlightedRoadIds.length &&
     path.roadIds.every((id, i) => id === search.highlightedRoadIds[i]);
@@ -187,6 +194,22 @@ export function PathPanel() {
             <p className={styles.error} role="alert" data-testid="path-error">
               {localError ?? search.error}
             </p>
+          )}
+
+          {showSearchInfo && (
+            <div className={styles.searchInfo} data-testid="path-search-info">
+              <span className={styles.infoItem} data-testid="path-info-start">
+                <span className={styles.infoDotStart} aria-hidden="true" />
+                起点：<strong>{searchedStartName}</strong>
+              </span>
+              <span className={styles.infoArrow} aria-hidden="true">
+                →
+              </span>
+              <span className={styles.infoItem} data-testid="path-info-end">
+                <span className={styles.infoDotEnd} aria-hidden="true" />
+                终点：<strong>{searchedEndName}</strong>
+              </span>
+            </div>
           )}
 
           {search.sameEndpoint && (

@@ -15,6 +15,8 @@ interface RoadLayerProps {
   draftToNodeId?: string;
   /** 是否允许拖动中间点 */
   editable: boolean;
+  /** 当前寻路结果高亮所经过的道路 id（只读，不修改任何道路数据） */
+  highlightedRoadIds: string[];
   onSelectRoad: (roadId: string) => void;
   onDragPointStart: (event: React.PointerEvent<SVGCircleElement>, roadId: string, index: number) => void;
   onDragDraftPointStart: (event: React.PointerEvent<SVGCircleElement>, index: number) => void;
@@ -38,6 +40,7 @@ export function RoadLayer({
   draftFromNodeId,
   draftToNodeId,
   editable,
+  highlightedRoadIds,
   onSelectRoad,
   onDragPointStart,
   onDragDraftPointStart,
@@ -52,6 +55,9 @@ export function RoadLayer({
     if (!from || !to) return null;
     return [{ x: from.point.x, y: from.point.y }, ...draftPoints, { x: to.point.x, y: to.point.y }];
   }, [draftFromNodeId, draftToNodeId, draftPoints, nodeById]);
+
+  // 高亮集合：只用于渲染判断，绝不修改 roads 数据
+  const highlightedSet = useMemo(() => new Set(highlightedRoadIds), [highlightedRoadIds]);
 
   const handleR = 5 / zoom;
   const draftHandleR = 6 / zoom;
@@ -70,6 +76,7 @@ export function RoadLayer({
         const polyline = buildRoadPolyline(road, from.point, to.point);
         const pointsAttr = polylineToSvgPoints(polyline);
         const isSelected = road.id === selectedRoadId;
+        const isHighlighted = highlightedSet.has(road.id);
 
         return (
           <g
@@ -78,6 +85,7 @@ export function RoadLayer({
             data-road-line="true"
             data-point-count={road.points.length}
             data-points={pointsAttr}
+            data-road-highlighted={isHighlighted ? 'true' : 'false'}
             className={styles.roadGroup}
           >
             {/* 透明加宽命中区，便于点选 */}
@@ -94,6 +102,32 @@ export function RoadLayer({
                 onSelectRoad(road.id);
               }}
             />
+            {/* 寻路结果高亮：复用本道路的真实折线坐标（含全部中间点），
+                不另外在两端点之间画直线，保证与底层道路完全重合 */}
+            {isHighlighted && (
+              <>
+                <polyline
+                  points={pointsAttr}
+                  fill="none"
+                  stroke="#ffffff"
+                  strokeWidth={12 / zoom}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={0.9}
+                />
+                <polyline
+                  points={pointsAttr}
+                  fill="none"
+                  stroke="#7c3aed"
+                  strokeWidth={7 / zoom}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={`${16 / zoom} ${7 / zoom}`}
+                  className={styles.highlightedLine}
+                  data-testid="road-highlight-line"
+                />
+              </>
+            )}
             {/* 选中时的外发光描边 */}
             {isSelected && (
               <polyline
