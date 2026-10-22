@@ -25,3 +25,6 @@ test-results
 
 # 用户自行上传的地图底图不应进入版本库（地图仅由用户上传）
 map-images/
+
+# 视觉分析工具的临时缓存
+.dsh-vision-router/
