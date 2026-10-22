@@ -106,11 +106,14 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   const scalePickActive = scalePicking && activeTab === 'scale';
 
   /**
-   * “路口/交叉点”类型节点只在“节点管理”页签显示。
-   * 其余页签（查看模式、道路管理、路径搜索、比例尺、项目）仅显示“出入口”和“地标”，
-   * 让地图更干净。节点本身、以及依赖节点的道路与寻路都不受影响——只影响画出来的标记。
+   * “路口/交叉点”类型节点在“节点管理”和“道路管理”页签显示。
+   * 其余页签（查看模式、路径搜索、比例尺、项目）仅显示“出入口”和“地标”，让地图更干净。
+   * 节点本身、以及依赖节点的道路与寻路都不受影响——只影响画出来的标记。
+   *
+   * 道路管理必须显示全部节点：绘制道路时端点就是节点，隐藏会让用户无法确认
+   * 该点哪条路连接了哪个节点。
    */
-  const showJunctionNodes = activeTab === 'nodes';
+  const showJunctionNodes = activeTab === 'nodes' || activeTab === 'roads';
   const visibleNodes = showJunctionNodes
     ? nodes
     : nodes.filter((node) => node.type !== 'junction');
