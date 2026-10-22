@@ -36,7 +36,6 @@ export default function App() {
       <header className={styles.header}>
         <div>
           <h1 className={styles.title}>天河体育中心周边地图可视化导航系统</h1>
-          <p className={styles.subtitle}>阶段 4 · 比例尺校准与道路距离估算</p>
         </div>
         <div className={styles.badgeGroup}>
           <span className={[styles.badge, image ? styles.badgeOk : styles.badgeMuted].join(' ')}>

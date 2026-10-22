@@ -1498,6 +1498,26 @@ async function main() {
     await page.click('[data-testid="tab-roads"]');
     await page.waitForTimeout(250);
 
+    // 前置归零：绘制/重绘道路成功后系统会自动选中该道路（便于用户看到刚建的路），
+    // 因此这里可能残留选中态。测试「点击 -> 选中 / 再点击 -> 取消」必须从
+    // 「未选中」开始，否则第一次点击会变成取消选中。
+    await page.evaluate(() => {
+      const sel = document.querySelector('[data-testid="road-item"][class*="Selected"]');
+      if (sel) sel.click();
+    });
+    await page.waitForTimeout(250);
+    const selBaseline = await page.evaluate(() => ({
+      selected: [...document.querySelectorAll('[data-testid="road-item"]')]
+        .map((li, i) => (li.className.includes('Selected') ? i : -1))
+        .filter((i) => i >= 0).length,
+      glow: document.querySelectorAll('polyline[stroke="#fbbf24"]').length,
+    }));
+    record(
+      '道路选中测试前置状态为未选中',
+      selBaseline.selected === 0,
+      `初始选中项=${selBaseline.selected}，外发光描边数=${selBaseline.glow}`,
+    );
+
     /** 读取道路列表与地图的实际选中/高亮状态 */
     const readRoadSelection = async () =>
       page.evaluate(() => {
