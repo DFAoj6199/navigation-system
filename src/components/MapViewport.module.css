@@ -84,6 +84,11 @@
   cursor: crosshair;
 }
 
+.canvasDraw {
+  cursor: crosshair;
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
 .canvasDragging {
   cursor: grabbing;
 }
@@ -155,6 +160,15 @@
   background: #fff7ed;
   border: 1px solid #fdba74;
   color: #9a3412;
+  font-size: 13px;
+}
+
+.drawBanner {
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #eff6ff;
+  border: 1px solid #93c5fd;
+  color: #1e40af;
   font-size: 13px;
 }
 

@@ -11,11 +11,20 @@ import {
 } from '../lib/viewport';
 import type { ViewportSize } from '../lib/viewport';
 import { NODE_TYPE_COLORS } from '../lib/constants';
+import { RoadLayer } from './RoadLayer';
 import styles from './MapViewport.module.css';
 
+/** 地图交互模式 */
+export type MapMode = 'pan' | 'add' | 'draw';
+
 interface MapViewportProps {
-  /** 当前交互模式：浏览 pan / 添加节点 add */
-  mode: 'pan' | 'add';
+  /**
+   * 当前交互模式：
+   *   pan  拖动/浏览（点击可选中节点或道路）
+   *   add  点击添加节点
+   *   draw 点击添加道路中间点
+   */
+  mode: MapMode;
 }
 
 const ZOOM_STEP = 1.15;
@@ -42,14 +51,28 @@ export function MapViewport({ mode }: MapViewportProps) {
   const imageWidth = useAppStore((s) => s.imageWidth);
   const imageHeight = useAppStore((s) => s.imageHeight);
   const nodes = useAppStore((s) => s.nodes);
+  const roads = useAppStore((s) => s.roads);
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const selectedRoadId = useAppStore((s) => s.selectedRoadId);
+  const draft = useAppStore((s) => s.draft);
   const camera = useAppStore((s) => s.camera);
   const viewInitialized = useAppStore((s) => s.viewInitialized);
   const setCamera = useAppStore((s) => s.setCamera);
   const markViewInitialized = useAppStore((s) => s.markViewInitialized);
   const addNodeAtPixel = useAppStore((s) => s.addNodeAtPixel);
   const selectNode = useAppStore((s) => s.selectNode);
+  const selectRoad = useAppStore((s) => s.selectRoad);
+  const addDraftPoint = useAppStore((s) => s.addDraftPoint);
+  const updateDraftPoint = useAppStore((s) => s.updateDraftPoint);
+  const updateRoadPoint = useAppStore((s) => s.updateRoadPoint);
   const pushNotice = useAppStore((s) => s.pushNotice);
+
+  /** 正在拖动的中间点（草稿点或已存道路的中间点） */
+  const pointDragRef = useRef<
+    | { kind: 'draft'; index: number }
+    | { kind: 'road'; roadId: string; index: number }
+    | null
+  >(null);
 
   // ---- 监听容器尺寸变化（含浏览器窗口缩放）----
   // 注意：空状态时本组件不渲染画布（提前 return），因此必须依赖 imageUrl，
@@ -172,8 +195,8 @@ export function MapViewport({ mode }: MapViewportProps) {
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!image) return;
     if (event.button !== 0 && event.button !== 1) return;
-    // 添加模式下点击画布 = 添加节点，不进入拖动
-    if (mode === 'add' && event.button === 0) return;
+    // 添加节点 / 绘制道路模式下，左键点击交给 click 逻辑处理，不进入平移
+    if ((mode === 'add' || mode === 'draw') && event.button === 0) return;
     const el = canvasRef.current;
     if (!el) return;
     el.setPointerCapture(event.pointerId);
@@ -197,6 +220,18 @@ export function MapViewport({ mode }: MapViewportProps) {
         y: Math.round(pixel.y),
       });
     }
+
+    // ---- 拖动中间点 ----
+    const pointDrag = pointDragRef.current;
+    if (pointDrag && pixel) {
+      if (pointDrag.kind === 'draft') {
+        updateDraftPoint(pointDrag.index, pixel.x, pixel.y);
+      } else {
+        updateRoadPoint(pointDrag.roadId, pointDrag.index, pixel.x, pixel.y);
+      }
+      return;
+    }
+
     const drag = dragState.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const dx = event.clientX - drag.startX;
@@ -213,16 +248,22 @@ export function MapViewport({ mode }: MapViewportProps) {
   };
 
   const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    // 结束中间点拖动
+    if (pointDragRef.current) {
+      pointDragRef.current = null;
+      return;
+    }
+
     const drag = dragState.current;
     const isSamePointer = drag !== null && drag.pointerId === event.pointerId;
     if (isSamePointer) {
       dragState.current = null;
       setIsDragging(false);
     }
-    // 添加模式下，只把“未发生拖动的左键抬起”视为一次点击
-    const isAddClick =
-      event.type === 'pointerup' && mode === 'add' && event.button === 0 && drag === null;
-    if (isAddClick) {
+    // 只把“未发生拖动的左键抬起”视为一次点击
+    const isClick = event.type === 'pointerup' && event.button === 0 && drag === null;
+
+    if (isClick && mode === 'add') {
       const pixel = toPixel(event.clientX, event.clientY);
       if (!pixel) return;
       const result = addNodeAtPixel(pixel.x, pixel.y);
@@ -234,7 +275,36 @@ export function MapViewport({ mode }: MapViewportProps) {
       } else {
         pushNotice('error', result.error ?? '添加节点失败');
       }
+      return;
     }
+
+    if (isClick && mode === 'draw') {
+      const pixel = toPixel(event.clientX, event.clientY);
+      if (!pixel) return;
+      const result = addDraftPoint(pixel.x, pixel.y);
+      if (!result.ok) {
+        pushNotice('error', result.error ?? '添加中间点失败');
+      }
+    }
+  };
+
+  /** 开始拖动草稿中间点 */
+  const handleDragDraftPointStart = (event: React.PointerEvent<SVGCircleElement>, index: number) => {
+    event.stopPropagation();
+    pointDragRef.current = { kind: 'draft', index };
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  };
+
+  /** 开始拖动已存道路的中间点 */
+  const handleDragRoadPointStart = (
+    event: React.PointerEvent<SVGCircleElement>,
+    roadId: string,
+    index: number,
+  ) => {
+    event.stopPropagation();
+    selectRoad(roadId);
+    pointDragRef.current = { kind: 'road', roadId, index };
+    canvasRef.current?.setPointerCapture(event.pointerId);
   };
 
   if (!image || !imageUrl) {
@@ -276,10 +346,12 @@ export function MapViewport({ mode }: MapViewportProps) {
         ref={canvasRef}
         className={[
           styles.canvas,
-          mode === 'add' ? styles.canvasAdd : styles.canvasPan,
-          isDragging ? styles.canvasDragging : '',
+          mode === 'add' ? styles.canvasAdd : '',
+          mode === 'draw' ? styles.canvasDraw : '',
+          mode === 'pan' || isDragging ? (isDragging ? styles.canvasDragging : styles.canvasPan) : '',
         ].join(' ')}
         data-testid="map-canvas"
+        data-mode={mode}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
@@ -316,6 +388,20 @@ export function MapViewport({ mode }: MapViewportProps) {
             height={imageHeight}
             data-testid="node-layer"
           >
+            {/* 道路图层放在节点下方，保证节点始终可见、可点选 */}
+            <RoadLayer
+              roads={roads}
+              nodes={nodes}
+              zoom={camera.zoom}
+              selectedRoadId={selectedRoadId}
+              draftPoints={draft?.points ?? []}
+              draftFromNodeId={draft?.fromNodeId}
+              draftToNodeId={draft?.toNodeId}
+              editable={mode === 'pan' || mode === 'draw'}
+              onSelectRoad={selectRoad}
+              onDragPointStart={handleDragRoadPointStart}
+              onDragDraftPointStart={handleDragDraftPointStart}
+            />
             {nodes.map((node) => {
               const isSelected = node.id === selectedNodeId;
               // 标记尺寸随缩放反向补偿，保持屏幕上大小恒定、易点击
@@ -379,12 +465,19 @@ export function MapViewport({ mode }: MapViewportProps) {
         <span className={styles.statusHint}>
           {mode === 'add'
             ? '点击模式：在地图上单击即可在对应像素位置添加节点'
-            : '拖动模式：按住鼠标拖动平移，滚轮以鼠标为中心缩放（点击节点可选中）'}
+            : mode === 'draw'
+              ? '绘制模式：在道路上连续单击添加中间点，点“完成绘制”保存'
+              : '拖动模式：按住鼠标拖动平移，滚轮缩放；点击节点/道路可选中，拖动白色圆点可编辑中间点'}
         </span>
       </div>
       {mode === 'add' && (
         <div className={styles.addBanner} data-testid="add-mode-banner">
           ➕ 添加节点模式已开启：单击地图放置节点；完成后请切回“拖动 / 浏览”模式以免误加
+        </div>
+      )}
+      {mode === 'draw' && (
+        <div className={styles.drawBanner} data-testid="draw-mode-banner">
+          ✏️ 道路绘制中：在道路上单击添加中间点（可多个）· 当前中间点 {draft?.points.length ?? 0} 个
         </div>
       )}
     </div>

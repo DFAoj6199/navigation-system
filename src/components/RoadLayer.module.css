@@ -1,0 +1,29 @@
+.root {
+  pointer-events: none;
+}
+
+.roadGroup {
+  pointer-events: none;
+}
+
+.hitArea {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.pointHandle {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.pointHandle:active {
+  cursor: grabbing;
+}
+
+.pointHandleStatic {
+  pointer-events: none;
+}
+
+.arrows {
+  pointer-events: none;
+}

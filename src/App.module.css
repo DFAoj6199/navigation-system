@@ -77,6 +77,44 @@
   padding-right: 2px;
 }
 
+.collapsible {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  flex: 0 0 auto;
+}
+
+.collapsible > summary {
+  cursor: pointer;
+  padding: 8px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #334155;
+  list-style: none;
+  user-select: none;
+}
+
+.collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+
+.collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.collapsibleBody {
+  padding: 0 10px 10px;
+}
+
 .main {
   flex: 1;
   min-width: 0;
@@ -96,6 +134,60 @@
   border-radius: 10px;
   flex-wrap: wrap;
   box-shadow: var(--shadow-sm);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: var(--shadow-sm);
+}
+
+.tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.tab:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.tabActive {
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.tabActive:hover {
+  background: var(--primary-strong);
+  color: #fff;
+}
+
+.viewInfo {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--text-muted);
+}
+
+.viewInfo p {
+  margin: 0;
 }
 
 .modeLabel {

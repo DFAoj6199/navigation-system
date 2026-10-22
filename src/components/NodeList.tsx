@@ -56,6 +56,10 @@ function NodeItem({ node, index, selected, onSelect }: NodeItemProps) {
   const deleteNode = useAppStore((s) => s.deleteNode);
   const setNodeType = useAppStore((s) => s.setNodeType);
   const pushNotice = useAppStore((s) => s.pushNotice);
+  // 关联道路：用于删除前明确提示，避免留下悬空引用
+  // 注意：这里返回原始 roads 数组（引用稳定），再计算关联，
+  // 不要在选择器里 filter（每次返回新数组会触发无限重渲染）。
+  const roads = useAppStore((s) => s.roads);
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(node.name);
@@ -235,10 +239,29 @@ function NodeItem({ node, index, selected, onSelect }: NodeItemProps) {
             <button
               type="button"
               className={styles.deleteButton}
+              data-testid="node-delete"
               onClick={(e) => {
                 e.stopPropagation();
-                deleteNode(node.id);
-                pushNotice('info', `已删除节点“${node.name}”`);
+                // 删除节点前明确处理关联道路：必须让用户知情，不能留下悬空引用
+                const connected = roads.filter(
+                  (r) => r.fromNodeId === node.id || r.toNodeId === node.id,
+                );
+                const message =
+                  connected.length > 0
+                    ? `节点“${node.name}”关联了 ${connected.length} 条道路。\n删除该节点会同时删除这些道路，是否继续？`
+                    : `确定删除节点“${node.name}”吗？`;
+                if (!window.confirm(message)) return;
+                const result = deleteNode(node.id);
+                if (!result.ok) {
+                  pushNotice('error', result.error ?? '删除节点失败');
+                  return;
+                }
+                pushNotice(
+                  'info',
+                  result.removedRoads > 0
+                    ? `已删除节点“${node.name}”及关联的 ${result.removedRoads} 条道路`
+                    : `已删除节点“${node.name}”`,
+                );
               }}
             >
               删除
