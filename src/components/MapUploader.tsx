@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { loadImageFile } from '../lib/imageLoader';
+import { readFileAsDataUrl } from '../lib/projectIO';
 import { ACCEPT_ATTR, MAX_IMAGE_BYTES } from '../lib/constants';
 import styles from './MapUploader.module.css';
 
@@ -16,6 +17,7 @@ export function MapUploader() {
 
   const image = useAppStore((s) => s.image);
   const setImage = useAppStore((s) => s.setImage);
+  const setImageSource = useAppStore((s) => s.setImageSource);
   const clearImage = useAppStore((s) => s.clearImage);
   const nodeCount = useAppStore((s) => s.nodes.length);
   const pushNotice = useAppStore((s) => s.pushNotice);
@@ -39,6 +41,14 @@ export function MapUploader() {
         },
         loaded.objectUrl,
       );
+      // 记录原始文件与内嵌数据，供“项目”页签导出时把底图一起打包
+      try {
+        const dataUrl = await readFileAsDataUrl(file);
+        setImageSource(file, dataUrl);
+      } catch {
+        // 内嵌失败不影响底图使用，导出时会提示“未内嵌图片”
+        setImageSource(file, null);
+      }
       pushNotice('success', `地图加载成功：${loaded.fileName}（${loaded.width}×${loaded.height} 原始像素）`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '图片加载失败';

@@ -357,6 +357,26 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   };
 
   if (!image || !imageUrl) {
+    // 两种情况要区分开：
+    //   - 完全空项目：提示上传底图；
+    //   - 已有节点/道路但缺底图（例如导入的项目文件未内嵌图片）：必须明确告知数据仍在，
+    //     否则用户会误以为导入失败或数据丢失。
+    const hasGeometry = nodes.length > 0 || roads.length > 0;
+    if (hasGeometry) {
+      return (
+        <div className={styles.emptyState} data-testid="map-empty">
+          <div className={styles.emptyIcon} aria-hidden="true">🗺️</div>
+          <h2 className={styles.emptyTitle}>已导入数据，但缺少底图</h2>
+          <p className={styles.emptyText} data-testid="map-need-image">
+            当前项目已包含 <strong>{nodes.length}</strong> 个节点、<strong>{roads.length}</strong> 条道路
+            {image ? `（原底图 ${image.fileName}，${image.width}×${image.height}）` : ''}，坐标数据完好。
+            <br />
+            但该文件没有内嵌地图图片，无法把节点画出来。请在左侧“地图底图”区域点击
+            <strong>重新选择底图</strong>，选择<strong>同一张</strong>地图图片即可恢复显示。
+          </p>
+        </div>
+      );
+    }
     return (
       <div className={styles.emptyState} data-testid="map-empty">
         <div className={styles.emptyIcon} aria-hidden="true">🗺️</div>

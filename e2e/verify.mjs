@@ -19,6 +19,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173/';
 const MAP_PATH = path.resolve(__dirname, '..', 'test-map.png');
 const SHOT_DIR = path.resolve(__dirname, '..', 'test-results');
+/** 阶段6：项目导入导出用的临时文件目录 */
+const DL_DIR = path.resolve(SHOT_DIR, 'p6');
 const IMAGE_W = 1600;
 const IMAGE_H = 1200;
 
@@ -77,6 +79,20 @@ async function setViewportAndWait(page, width, height) {
 
 async function main() {
   fs.mkdirSync(SHOT_DIR, { recursive: true });
+  fs.rmSync(DL_DIR, { recursive: true, force: true });
+  fs.mkdirSync(DL_DIR, { recursive: true });
+
+    /** 等待节点数量达到期望值（删除节点会弹原生确认框，需要时间完成） */
+    const waitForNodeCount = async (expected, timeoutMs = 4000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const n = await page.locator('[data-testid="node-item"]').count();
+        if (n === expected) return n;
+        await page.waitForTimeout(80);
+      }
+      return page.locator('[data-testid="node-item"]').count();
+    };
+
 
   if (!fs.existsSync(MAP_PATH)) {
     throw new Error(`缺少测试地图：${MAP_PATH}`);
@@ -84,6 +100,25 @@ async function main() {
 
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+
+    /**
+     * 接受下一个原生对话框。
+     *
+     * 直接 `page.once('dialog', d => d.accept())` 的问题是：若上一步注册的处理器尚未触发，
+     * 会残留并抢走本次对话框，导致 “Cannot accept dialog which is already handled”。
+     * 这里统一装配一次监听，并吞掉“已经处理过”的异常，避免测试因时序问题崩溃。
+     */
+    let autoAcceptDialogs = true;
+    /** 最近一次原生对话框的文本，供“说明关联道路”等断言使用 */
+    let lastDialogMessage = '';
+    page.on('dialog', (dialog) => {
+      lastDialogMessage = dialog.message();
+      if (!autoAcceptDialogs) return;
+      dialog.accept().catch(() => {
+        /* 已被其他处理器接受，忽略 */
+      });
+    });
+
   const consoleErrors = [];
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text());
@@ -286,11 +321,9 @@ async function main() {
 
     // ---------- 10. 删除节点 ----------
     // 阶段2 起删除节点会弹确认（若关联道路还会说明级联删除）
-    page.once('dialog', (dialog) => dialog.accept());
     const beforeDelete = await page.locator('[data-testid="node-item"]').count();
     await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
-    await page.waitForTimeout(300);
-    const afterDelete = await page.locator('[data-testid="node-item"]').count();
+    const afterDelete = await waitForNodeCount(beforeDelete - 1);
     record('删除节点', afterDelete === beforeDelete - 1, `${beforeDelete} -> ${afterDelete}`);
 
     // ---------- 11. 选中节点 ----------
@@ -318,8 +351,7 @@ async function main() {
     await page.waitForTimeout(200);
     for (let i = 0; i < 6; i += 1) {
       if ((await page.locator('[data-testid="node-item"]').count()) === 0) break;
-      page.once('dialog', (dialog) => dialog.accept());
-      await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
+        await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
       await page.waitForTimeout(120);
     }
     const addNode = async (x, y, name) => {
@@ -561,11 +593,7 @@ async function main() {
     // ---------- 20. 删除节点级联删除道路 ----------
     await page.click('[data-testid="tab-nodes"]');
     await page.waitForTimeout(250);
-    let dialogMessage = '';
-    page.once('dialog', (dialog) => {
-      dialogMessage = dialog.message();
-      dialog.accept();
-    });
+    lastDialogMessage = '';
     await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
     await page.waitForTimeout(350);
     await page.click('[data-testid="tab-roads"]');
@@ -573,8 +601,8 @@ async function main() {
     const roadsAfterNodeDelete = await page.locator('[data-testid="road-item"]').count();
     record(
       '删除节点时级联删除关联道路且提示明确',
-      roadsAfterNodeDelete === 0 && dialogMessage.includes('关联'),
-      `确认框提示：“${dialogMessage.replace(/\n/g, ' ')}”，剩余道路=${roadsAfterNodeDelete}`,
+      roadsAfterNodeDelete === 0 && lastDialogMessage.includes('关联'),
+      `确认框提示：“${lastDialogMessage.replace(/\n/g, ' ')}”，剩余道路=${roadsAfterNodeDelete}`,
     );
 
     // 再校验图层中不存在悬空折线
@@ -592,9 +620,8 @@ async function main() {
       for (let i = 0; i < 40; i += 1) {
         const n = await page.locator('[data-testid="node-item"]').count();
         if (n === 0) break;
-        page.once('dialog', (d) => d.accept());
         await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
-        await page.waitForTimeout(90);
+        await waitForNodeCount(n - 1, 3000);
       }
     };
 
@@ -1568,7 +1595,337 @@ async function main() {
       `箭头标记=${arrowState.bidirectionalMarkers}，草稿箭头=${arrowState.draftArrows}，道路内三角形=${arrowState.polygonInRoads}，道路数=${arrowState.roadCount}，线条完整=${arrowState.linesOk}`,
     );
 
-    // ---------- 49. 控制台无错误 ----------
+    // ==========================================================
+    // 阶段 6：项目数据保存、导入与异常处理
+    // ==========================================================
+
+    // 先把当前项目整理成一份可导出的确定数据：
+    //   P1(300,300) -中间点(500,500)-> P2(700,300) -> P3(1100,300)
+    await clearAllNodes();
+    await addNodeByName(300, 300, 'P1');
+    await addNodeByName(700, 300, 'P2');
+    await addNodeByName(1100, 300, 'P3');
+    await page.click('[data-testid="view-fit"]');
+    await page.waitForTimeout(250);
+    await connectNodes('P1', 'P2', [[500, 500]]);
+    await connectNodes('P2', 'P3');
+
+    // 比例尺：像素 (0,0) -> (500,0) = 500 米，即 1 米/像素
+    await calibrate(500, 'm');
+    const scaleUiP6 = await readScaleUi();
+    const calibratedP6 = String(scaleUiP6.calibrated) === 'true';
+
+    // ---------- 50. 导出项目 JSON ----------
+    await page.click('[data-testid="tab-project"]');
+    await page.waitForTimeout(300);
+    const embedBefore = (await page.textContent('[data-testid="project-embed"]')).trim();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 20000 }),
+      page.click('[data-testid="project-export"]'),
+    ]);
+    const exportPath = path.join(DL_DIR, download.suggestedFilename());
+    await download.saveAs(exportPath);
+    const exportedRaw = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
+
+    const requiredKeys = ['app', 'version', 'image', 'nodes', 'roads', 'scale', 'config'];
+    const hasAllKeys = requiredKeys.every((k) => Object.prototype.hasOwnProperty.call(exportedRaw, k));
+    const scaleRound = exportedRaw.scale?.metersPerPixel;
+
+    record(
+      '导出项目 JSON：包含地图数据、尺寸、节点、道路中间点、比例尺与配置',
+      hasAllKeys &&
+        exportedRaw.nodes.length === 3 &&
+        exportedRaw.roads.length === 2 &&
+        Array.isArray(exportedRaw.roads[0].points) &&
+        exportedRaw.roads[0].points.length === 1 &&
+        exportedRaw.image.width === IMAGE_W &&
+        exportedRaw.image.height === IMAGE_H &&
+        typeof exportedRaw.scale?.metersPerPixel === 'number' &&
+        Math.abs((scaleRound ?? 0) - 1) < 1e-9 &&
+        typeof exportedRaw.image.dataUrl === 'string' &&
+        exportedRaw.image.dataUrl.startsWith('data:image/'),
+      `键=${Object.keys(exportedRaw).join('/')}，节点=${exportedRaw.nodes.length}，道路=${exportedRaw.roads.length}，中间点=${JSON.stringify(exportedRaw.roads.map((r) => r.points.length))}，尺寸=${exportedRaw.image.width}×${exportedRaw.image.height}，米/像素=${scaleRound}，内嵌图片=${exportedRaw.image.dataUrl ? exportedRaw.image.dataUrl.slice(0, 22) + '…' : '无'}`,
+    );
+
+    record(
+      '导出文件的底图已内嵌，可在其他机器完整恢复',
+      Boolean(exportedRaw.image.dataUrl) && embedBefore.includes('是'),
+      `界面显示内嵌=${embedBefore}，文件内 dataUrl 长度=${exportedRaw.image.dataUrl?.length ?? 0}`,
+    );
+
+    await page.screenshot({ path: path.join(SHOT_DIR, '13-project.png') });
+
+    // ---------- 51. 非法 JSON 被拒绝且不破坏现有项目 ----------
+    const snapshotP6 = async () =>
+      page.evaluate(() => ({
+        counts: document.querySelector('[data-testid="project-counts"]')?.textContent?.trim() ?? '',
+        scale: document.querySelector('[data-testid="project-scale"]')?.textContent?.trim() ?? '',
+        markers: [...document.querySelectorAll('[data-node-marker]')]
+          .map((m) => m.getAttribute('data-node-id') + '@' + m.getAttribute('data-pixel-x') + ',' + m.getAttribute('data-pixel-y'))
+          .sort()
+          .join('|'),
+        roads: [...document.querySelectorAll('[data-road-line="true"]')]
+          .map((g) => g.getAttribute('data-points'))
+          .sort()
+          .join('|'),
+      }));
+
+    const baselineP6 = await snapshotP6();
+
+    const writeBad = (name, content) => {
+      const p = path.join(DL_DIR, name);
+      fs.writeFileSync(p, content);
+      return p;
+    };
+    const clone = () => JSON.parse(JSON.stringify(exportedRaw));
+
+    const badSyntax = writeBad('bad-syntax.json', '{ "version": 1, "nodes": [ }');
+    await page.setInputFiles('[data-testid="project-file-input"]', badSyntax);
+    await page.waitForTimeout(900);
+    const errSyntax = (await page.textContent('[data-testid="project-error"]')).trim();
+    const afterSyntax = await snapshotP6();
+    record(
+      '非法 JSON：给出明确错误提示且当前项目不受影响',
+      errSyntax.includes('JSON 格式错误') &&
+        JSON.stringify(afterSyntax) === JSON.stringify(baselineP6),
+      `提示=“${errSyntax.split('\n')[0]}”；数据未变=${JSON.stringify(afterSyntax) === JSON.stringify(baselineP6)}`,
+    );
+
+    // ---------- 52. 缺失地图 ----------
+    const noImage = clone();
+    delete noImage.image;
+    const noImagePath = writeBad('no-image.json', JSON.stringify(noImage));
+    await page.setInputFiles('[data-testid="project-file-input"]', noImagePath);
+    await page.waitForTimeout(900);
+    const errImage = (await page.textContent('[data-testid="project-error"]')).trim();
+    const afterImage = await snapshotP6();
+    record(
+      '缺失地图：导入被拒绝，提示缺少地图信息',
+      errImage.includes('缺少地图图片信息') &&
+        JSON.stringify(afterImage) === JSON.stringify(baselineP6),
+      `提示=“${errImage.split('\n').join(' / ')}”；数据未变=${JSON.stringify(afterImage) === JSON.stringify(baselineP6)}`,
+    );
+
+    // ---------- 53. 无效道路端点引用 ----------
+    const badRef = clone();
+    badRef.roads[0].toNodeId = 'ghost-node-id';
+    const badRefPath = writeBad('bad-road-ref.json', JSON.stringify(badRef));
+    await page.setInputFiles('[data-testid="project-file-input"]', badRefPath);
+    await page.waitForTimeout(900);
+    const errRef = (await page.textContent('[data-testid="project-error"]')).trim();
+    const refPathText = (await page.textContent('[data-testid="project-error-path"]')).trim();
+    const afterRef = await snapshotP6();
+    record(
+      '无效道路引用：导入被拒绝并指出出错位置',
+      errRef.includes('无效的道路端点引用') &&
+        refPathText.includes('roads[0]') &&
+        JSON.stringify(afterRef) === JSON.stringify(baselineP6),
+      `提示=“${errRef.split('\n')[0]}”；${refPathText}；数据未变=${JSON.stringify(afterRef) === JSON.stringify(baselineP6)}`,
+    );
+
+    // ---------- 54. 节点 ID 重复与非法坐标 ----------
+    const dupId = clone();
+    dupId.nodes[1].id = dupId.nodes[0].id;
+    const dupPath = writeBad('dup-id.json', JSON.stringify(dupId));
+    await page.setInputFiles('[data-testid="project-file-input"]', dupPath);
+    await page.waitForTimeout(800);
+    const errDup = (await page.textContent('[data-testid="project-error"]')).trim();
+
+    const badCoord = clone();
+    badCoord.nodes[0].point = { x: 'abc', y: 10 };
+    const coordPath = writeBad('bad-coord.json', JSON.stringify(badCoord));
+    await page.setInputFiles('[data-testid="project-file-input"]', coordPath);
+    await page.waitForTimeout(800);
+    const errCoord = (await page.textContent('[data-testid="project-error"]')).trim();
+    const afterBoth = await snapshotP6();
+
+    record(
+      '节点 ID 重复与非法坐标：均被拒绝并说明原因',
+      errDup.includes('节点 id 重复') &&
+        errCoord.includes('必须是有限数字') &&
+        JSON.stringify(afterBoth) === JSON.stringify(baselineP6),
+      `重复ID提示=“${errDup.split('\n')[0]}”；坐标提示=“${errCoord.split('\n')[0]}”；数据未变=${JSON.stringify(afterBoth) === JSON.stringify(baselineP6)}`,
+    );
+
+    // ---------- 55. 导入覆盖需确认，取消后原数据保留 ----------
+    // 先真正清空当前项目（节点 + 底图）：此时导入属于“空项目”场景，按设计不应要求确认。
+    // 注意：只删节点而保留底图时，底图本身仍属于未保存数据，确认框会正常出现。
+    await page.click('[data-testid="tab-nodes"]');
+    await page.waitForTimeout(200);
+    await clearAllNodes();
+    await page.evaluate(() => {
+      const details = document.querySelector('[data-testid="uploader-details"]');
+      if (details && !details.open) details.open = true;
+    });
+    await page.waitForTimeout(200);
+    await page.getByRole('button', { name: '移除底图' }).click();
+    await page.waitForTimeout(500);
+    await page.click('[data-testid="tab-project"]');
+    await page.waitForTimeout(250);
+    await page.setInputFiles('[data-testid="project-file-input"]', exportPath);
+    await page.waitForTimeout(1400);
+    const noConfirmOnEmpty = (await page.locator('[data-testid="project-confirm"]').count()) === 0;
+    const importedState = await snapshotP6();
+    const importedOk =
+      importedState.counts === '3 / 2' &&
+        importedState.markers.split('|').length === 3 &&
+        importedState.roads.split('|').length === 2 &&
+        importedState.scale.includes('1.0000');
+
+    record(
+      '正常导入：节点、道路、比例尺与地图标记全部恢复',
+      noConfirmOnEmpty && importedOk,
+      `空项目导入无需确认=${noConfirmOnEmpty}；节点/道路=${importedState.counts}；地图节点数=${importedState.markers.split('|').length}；道路折线=${importedState.roads}；比例尺=${importedState.scale}`,
+    );
+
+    // 再次导入同一份文件 -> 必须确认；取消后数据保持
+    await page.setInputFiles('[data-testid="project-file-input"]', exportPath);
+    await page.waitForTimeout(900);
+    const confirmShown = (await page.locator('[data-testid="project-confirm"]').count()) > 0;
+    const beforeCancel = await snapshotP6();
+    await page.click('[data-testid="project-cancel-overwrite"]');
+    await page.waitForTimeout(600);
+    const confirmGone = (await page.locator('[data-testid="project-confirm"]').count()) === 0;
+    const afterCancel = await snapshotP6();
+    record(
+      '导入前提醒数据将被替换，取消后原数据完整保留',
+      confirmShown &&
+        confirmGone &&
+        JSON.stringify(beforeCancel) === JSON.stringify(afterCancel),
+      `确认框出现=${confirmShown}，取消后关闭=${confirmGone}，取消前后数据一致=${JSON.stringify(beforeCancel) === JSON.stringify(afterCancel)}`,
+    );
+
+    // ---------- 56. 覆盖确认后数据被替换 ----------
+    const other = clone();
+    other.image.fileName = 'another-map.png';
+    other.nodes = other.nodes.slice(0, 2);
+    other.roads = other.roads.slice(0, 1);
+    other.roads[0].points = [{ x: 500, y: 400 }];
+    other.scale = null;
+    other.image.dataUrl = null;
+    const otherPath = writeBad('other-project.json', JSON.stringify(other));
+
+    await page.setInputFiles('[data-testid="project-file-input"]', otherPath);
+    await page.waitForTimeout(900);
+    await page.click('[data-testid="project-confirm-overwrite"]');
+    await page.waitForTimeout(1200);
+    const replaced = await snapshotP6();
+    const embedAfter = (await page.textContent('[data-testid="project-embed"]')).trim();
+    // 未内嵌图片 -> 地图无法绘制，但数据必须完好保留，并给出“需要重新选择底图”的明确提示
+    // 标题与正文都要取：标题说明“缺少底图”，正文说明数据仍在
+    const needImageHint = await page.evaluate(() => {
+      const body = document.querySelector('[data-testid="map-need-image"]');
+      const title = document.querySelector('[data-testid="map-empty"] h2');
+      if (!body || !title) return null;
+      return (title.textContent + ' ' + body.textContent).replace(/\s+/g, ' ').trim();
+    });
+    // 从管理列表确认数据确实存在
+    await page.click('[data-testid="tab-nodes"]');
+    await page.waitForTimeout(300);
+    const nodeItemsP6 = await page.locator('[data-testid="node-item"]').count();
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(300);
+    const roadItemsP6 = await page.locator('[data-testid="road-item"]').count();
+    const roadPtsAfter = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="road-item"]')].map((li) => li.getAttribute('data-point-count')),
+    );
+    await page.click('[data-testid="tab-project"]');
+    await page.waitForTimeout(250);
+
+    record(
+      '确认覆盖后：数据被替换为新项目；未内嵌底图时保留数据并提示重新选择',
+      replaced.counts === '2 / 1' &&
+        nodeItemsP6 === 2 &&
+        roadItemsP6 === 1 &&
+        roadPtsAfter.join(',') === '1' &&
+        replaced.scale.includes('未校准') &&
+        embedAfter.includes('否') &&
+        Boolean(needImageHint) &&
+        needImageHint.includes('缺少底图') &&
+        needImageHint.includes('2') &&
+        needImageHint.includes('1'),
+      `节点/道路=${replaced.counts}，列表节点=${nodeItemsP6}、道路=${roadItemsP6}（中间点=${roadPtsAfter.join(',')}），比例尺=${replaced.scale}，内嵌=${embedAfter}，提示=“${(needImageHint ?? '无').slice(0, 60)}…”`,
+    );
+
+    // ---------- 57. 导入后删除道路 / 节点，搜索结果及时失效 ----------
+    // 先重新导入完整项目并建立搜索
+    await page.setInputFiles('[data-testid="project-file-input"]', exportPath);
+    await page.waitForTimeout(900);
+    if ((await page.locator('[data-testid="project-confirm"]').count()) > 0) {
+      await page.click('[data-testid="project-confirm-overwrite"]');
+      await page.waitForTimeout(1200);
+    }
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(250);
+    const p6opts = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', p6opts.find((o) => o.t === 'P1').v);
+    await page.selectOption('[data-testid="path-end-select"]', p6opts.find((o) => o.t === 'P3').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(500);
+    const searchedOk = (await page.locator('[data-testid="path-shortest"]').count()) > 0;
+
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(300);
+    await page.locator('[data-testid="road-delete"]').first().click();
+    await page.waitForTimeout(500);
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(300);
+    const afterDeleteRoad = await page.evaluate(() => ({
+      noResult: document.querySelectorAll('[data-testid="path-no-result"]').length,
+      shortest: document.querySelectorAll('[data-testid="path-shortest"]').length,
+      items: document.querySelectorAll('[data-testid="path-item"]').length,
+      highlighted: document.querySelectorAll('[data-road-highlighted="true"]').length,
+    }));
+    record(
+      '删除道路后旧搜索结果被清除，不残留过期结果',
+      searchedOk &&
+        afterDeleteRoad.shortest === 0 &&
+        afterDeleteRoad.items === 0 &&
+        afterDeleteRoad.highlighted === 0,
+      `删除前有结果=${searchedOk}；删除后 最短路径框=${afterDeleteRoad.shortest}、结果条目=${afterDeleteRoad.items}、残留高亮=${afterDeleteRoad.highlighted}`,
+    );
+
+    // ---------- 58. 数据一致性：导入后节点/道路/比例尺互相匹配 ----------
+    await page.click('[data-testid="tab-project"]');
+    await page.waitForTimeout(250);
+    await page.setInputFiles('[data-testid="project-file-input"]', exportPath);
+    await page.waitForTimeout(900);
+    if ((await page.locator('[data-testid="project-confirm"]').count()) > 0) {
+      await page.click('[data-testid="project-confirm-overwrite"]');
+      await page.waitForTimeout(1300);
+    }
+    const consistency = await page.evaluate(() => {
+      const markers = [...document.querySelectorAll('[data-node-marker]')].map((m) => ({
+        id: m.getAttribute('data-node-id'),
+        x: Number(m.getAttribute('data-pixel-x')),
+        y: Number(m.getAttribute('data-pixel-y')),
+      }));
+      const roads = [...document.querySelectorAll('[data-road-line="true"]')].map((g) => ({
+        pts: g.getAttribute('data-points'),
+        edges: g.querySelectorAll('[data-road-point]').length,
+      }));
+      return { markers, roads };
+    });
+    const fileNodeMap = new Map(exportedRaw.nodes.map((n) => [n.id, `${n.point.x},${n.point.y}`]));
+    const nodesMatch =
+      consistency.markers.length === exportedRaw.nodes.length &&
+      consistency.markers.every((m) => fileNodeMap.get(m.id) === `${m.x},${m.y}`);
+    // 每条道路的折线点数 = 中间点数 + 2 个端点
+    const roadsMatch =
+      consistency.roads.length === exportedRaw.roads.length &&
+      consistency.roads.every((r) => r.pts.trim().split(/\s+/).length === r.edges + 2);
+    record(
+      '导入后节点、道路、比例尺数据保持一致',
+      nodesMatch && roadsMatch && (await page.textContent('[data-testid="project-scale"]')).includes('1.0000'),
+      `节点一致=${nodesMatch}（${consistency.markers.length}/${exportedRaw.nodes.length}），道路折线点数=中间点+2：${roadsMatch}，比例尺=${(await page.textContent('[data-testid="project-scale"]')).trim()}，校准=${calibratedP6}`,
+    );
+
+    await page.screenshot({ path: path.join(SHOT_DIR, '14-project-import.png') });
+
+    // ---------- 59. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');
   } finally {

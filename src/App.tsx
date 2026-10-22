@@ -7,12 +7,13 @@ import { NodeList } from './components/NodeList';
 import { RoadPanel } from './components/RoadPanel';
 import { PathPanel } from './components/PathPanel';
 import { ScalePanel } from './components/ScalePanel';
+import { ProjectPanel } from './components/ProjectPanel';
 import { NoticeBar } from './components/NoticeBar';
 import { useAppStore } from './store/useAppStore';
 import styles from './App.module.css';
 
 /** 页面管理区域：普通查看 / 节点管理 / 道路管理 / 路径搜索 */
-export type ManageTab = 'view' | 'nodes' | 'roads' | 'paths' | 'scale';
+export type ManageTab = 'view' | 'nodes' | 'roads' | 'paths' | 'scale' | 'project';
 
 export default function App() {
   const [mode, setMode] = useState<MapMode>('pan');
@@ -56,6 +57,7 @@ export default function App() {
                 { key: 'roads', label: '道路管理' },
                 { key: 'paths', label: '路径搜索' },
                 { key: 'scale', label: '比例尺' },
+                { key: 'project', label: '项目' },
               ] as Array<{ key: ManageTab; label: string }>
             ).map((item) => (
               <button
@@ -91,6 +93,7 @@ export default function App() {
           {tab === 'roads' && <RoadPanel mode={mode} setMode={setMode} />}
           {tab === 'paths' && <PathPanel />}
           {tab === 'scale' && <ScalePanel />}
+          {tab === 'project' && <ProjectPanel />}
           {tab === 'view' && (
             <div className={styles.viewInfo} data-testid="view-mode-info">
               <p>当前为查看模式，节点与道路管理列表已隐藏。</p>

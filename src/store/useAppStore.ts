@@ -94,6 +94,9 @@ interface AppState {
   /** 图片原始像素尺寸，未加载时为 0 */
   imageWidth: number;
   imageHeight: number;
+  /** 底图原始文件对象与内嵌数据（用于导出时内嵌图片；非上传来源时为 null） */
+  imageFile: File | null;
+  imageDataUrl: string | null;
 
   // ---- 业务数据 ----
   nodes: MapNode[];
@@ -198,6 +201,26 @@ interface AppState {
 
   /** 导出为可复用的工程数据（阶段2用于测试与后续持久化） */
   toProject: () => MapProject | null;
+
+  /**
+   * 导入一份已通过校验的项目数据。
+   *
+   * 调用方必须先完成校验与用户确认；这里只做状态替换。
+   * 若传入的 imageDataUrl 为 null（文件未内嵌图片），则清空底图但保留节点与道路，
+   * 由界面提示用户重新选择底图。
+   */
+  importProject: (input: {
+    image: MapImageMeta;
+    imageDataUrl: string | null;
+    objectUrl: string | null;
+    nodes: MapNode[];
+    roads: Road[];
+    scale: MapScale | null;
+    searchLimits?: SearchLimits;
+  }) => void;
+
+  /** 记录底图对应的原始文件（上传时调用，导出时用于内嵌图片） */
+  setImageSource: (file: File | null, dataUrl: string | null) => void;
 }
 
 let noticeSeq = 0;
@@ -255,6 +278,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   imageUrl: null,
   imageWidth: 0,
   imageHeight: 0,
+  imageFile: null,
+  imageDataUrl: null,
   nodes: [],
   roads: [],
   notices: [],
@@ -270,6 +295,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       imageUrl: objectUrl,
       imageWidth: meta.width,
       imageHeight: meta.height,
+      // 换图后旧的图片数据不再对应当前底图，一并清空（由 setImageSource 重新写入）
+      imageFile: null,
+      imageDataUrl: null,
       // 换图后旧节点/道路坐标失去意义，明确清空并提示，避免坐标错位
       nodes: [],
       roads: [],
@@ -291,6 +319,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       imageUrl: null,
       imageWidth: 0,
       imageHeight: 0,
+      imageFile: null,
+      imageDataUrl: null,
       nodes: [],
       roads: [],
       startNodeId: '',
@@ -759,6 +789,41 @@ export const useAppStore = create<AppState>((set, get) => ({
       roads,
       scale,
     };
+  },
+
+  setImageSource: (file, dataUrl) => set({ imageFile: file, imageDataUrl: dataUrl }),
+
+  importProject: ({ image, imageDataUrl, objectUrl, nodes, roads, scale, searchLimits }) => {
+    const previousUrl = get().imageUrl;
+    // 仅释放属于本应用创建的 blob URL；导入的 data URL 不是 blob，无需释放
+    if (previousUrl && previousUrl.startsWith('blob:')) URL.revokeObjectURL(previousUrl);
+
+    const limits = searchLimits ?? get().searchLimits;
+
+    set({
+      image,
+      // 未内嵌图片时 objectUrl 为 null：节点与道路仍完整保留，但界面需提示重新选择底图
+      imageUrl: objectUrl,
+      imageWidth: image.width,
+      imageHeight: image.height,
+      imageFile: null,
+      imageDataUrl,
+      nodes: sortNodes(nodes),
+      roads,
+      scale,
+      // 导入即替换整份项目：起终点、搜索结果与视图状态全部重置，避免残留旧项目的结果
+      startNodeId: '',
+      endNodeId: '',
+      searchLimits: limits,
+      // 导入的比例尺直接生效（不再先清空再加回，避免同名字段重复）
+      scalePointA: null,
+      scalePointB: null,
+      scalePicking: false,
+      scaleNextPoint: 'a',
+      ...initialView,
+      search: createInitialSearchState(limits),
+      notices: get().notices,
+    });
   },
 }));
 
