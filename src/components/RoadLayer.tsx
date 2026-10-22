@@ -148,10 +148,6 @@ export function RoadLayer({
               strokeLinecap="round"
               strokeLinejoin="round"
             />
-            {/* 双向道路：在中点位置绘制一对方向相反的箭头，直观表达“双向” */}
-            <g className={styles.arrows} data-testid="road-bidirectional-marker">
-              {renderBidirectionalMarkers(polyline, zoom, isSelected ? '#b45309' : '#0f766e')}
-            </g>
             {/* 中间点手柄（可拖动编辑） */}
             {road.points.map((point, index) => (
               <circle
@@ -189,7 +185,6 @@ export function RoadLayer({
             strokeLinejoin="round"
             strokeDasharray={`${10 / zoom} ${6 / zoom}`}
           />
-          <g data-testid="draft-arrows">{renderBidirectionalMarkers(draftPolyline, zoom, '#2563eb')}</g>
           {draftPoints.map((point, index) => (
             <circle
               key={`draft-${index}`}
@@ -211,67 +206,4 @@ export function RoadLayer({
       )}
     </g>
   );
-}
-
-/**
- * 在折线中点处绘制“双向”箭头标记：一对指向相反方向的箭头。
- * 尺寸按 zoom 反向补偿，保证屏幕上大小恒定。
- */
-function renderBidirectionalMarkers(polyline: PixelPoint[], zoom: number, color = '#0f766e') {
-  if (polyline.length < 2) return null;
-  // 取折线中点所在的那一段
-  const segment = pickMiddleSegment(polyline);
-  if (!segment) return null;
-  const { a, b } = segment;
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  if (len < 1e-6) return null;
-  const ux = dx / len;
-  const uy = dy / len;
-  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-
-  const size = 8 / zoom;
-  const gap = 7 / zoom;
-
-  return (
-    <>
-      {[-1, 1].map((direction) => {
-        const tip = { x: mid.x + ux * direction * gap, y: mid.y + uy * direction * gap };
-        const back = { x: tip.x - ux * direction * size * 1.5, y: tip.y - uy * direction * size * 1.5 };
-        const left = { x: back.x - uy * size * 0.75, y: back.y + ux * size * 0.75 };
-        const right = { x: back.x + uy * size * 0.75, y: back.y - ux * size * 0.75 };
-        return (
-          <polygon
-            key={direction}
-            points={`${tip.x},${tip.y} ${left.x},${left.y} ${right.x},${right.y}`}
-            fill={color}
-            stroke="#ffffff"
-            strokeWidth={1.5 / zoom}
-          />
-        );
-      })}
-    </>
-  );
-}
-
-/** 选出折线按长度计的中段，用于放置箭头标记 */
-function pickMiddleSegment(polyline: PixelPoint[]): { a: PixelPoint; b: PixelPoint } | null {
-  const lengths: number[] = [];
-  let total = 0;
-  for (let i = 1; i < polyline.length; i += 1) {
-    const d = Math.hypot(polyline[i].x - polyline[i - 1].x, polyline[i].y - polyline[i - 1].y);
-    lengths.push(d);
-    total += d;
-  }
-  if (total < 1e-6) return null;
-  const half = total / 2;
-  let acc = 0;
-  for (let i = 0; i < lengths.length; i += 1) {
-    if (acc + lengths[i] >= half) {
-      return { a: polyline[i], b: polyline[i + 1] };
-    }
-    acc += lengths[i];
-  }
-  return { a: polyline[polyline.length - 2], b: polyline[polyline.length - 1] };
 }

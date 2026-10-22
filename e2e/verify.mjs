@@ -1542,6 +1542,32 @@ async function main() {
       `选中项=${JSON.stringify(sel4.selectedIndexes)}`,
     );
 
+    // ---------- 48c. 道路只用线条表示，不再绘制方向箭头 ----------
+    const arrowState = await page.evaluate(() => ({
+      bidirectionalMarkers: document.querySelectorAll('[data-testid="road-bidirectional-marker"]').length,
+      draftArrows: document.querySelectorAll('[data-testid="draft-arrows"]').length,
+      // 箭头是以白色描边绘制的小三角形，出现在道路组内
+      polygonInRoads: document.querySelectorAll('[data-road-line="true"] polygon').length,
+      roadCount: document.querySelectorAll('[data-road-line="true"]').length,
+      // 道路主线仍在且坐标完整
+      linesOk: [...document.querySelectorAll('[data-road-line="true"]')].every((g) => {
+        const main = [...g.querySelectorAll('polyline')].find((l) => {
+          const st = l.getAttribute('stroke');
+          return st && st !== 'transparent' && st !== '#ffffff' && st !== '#fbbf24' && st !== '#7c3aed';
+        });
+        return Boolean(main) && (main.getAttribute('points') ?? '').trim().split(/\s+/).length >= 2;
+      }),
+    }));
+    record(
+      '道路只用线条表示，不再绘制方向箭头',
+      arrowState.bidirectionalMarkers === 0 &&
+        arrowState.draftArrows === 0 &&
+        arrowState.polygonInRoads === 0 &&
+        arrowState.roadCount > 0 &&
+        arrowState.linesOk,
+      `箭头标记=${arrowState.bidirectionalMarkers}，草稿箭头=${arrowState.draftArrows}，道路内三角形=${arrowState.polygonInRoads}，道路数=${arrowState.roadCount}，线条完整=${arrowState.linesOk}`,
+    );
+
     // ---------- 49. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');
