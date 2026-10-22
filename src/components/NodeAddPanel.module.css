@@ -33,12 +33,16 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+  /* grid 子项默认 min-width:auto，内部 input 的固有宽度会撑破容器导致横向溢出 */
+  min-width: 0;
 }
 
 .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* 关键：允许 grid/flex 子项被压缩到小于内容固有宽度 */
+  min-width: 0;
 }
 
 .label {
