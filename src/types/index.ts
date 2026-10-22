@@ -26,7 +26,11 @@ export interface MapNode {
   name: string;
   /** 原始图片像素坐标 */
   point: PixelPoint;
-  /** 节点类型，默认 'junction' */
+  /**
+   * 节点类型。新建节点默认是 'landmark'（地标）。
+   * 'junction'（路口/交叉点）类型的节点只在“节点管理”页签显示在地图上，
+   * 其余页签仅显示出入口与地标。
+   */
   type: NodeType;
   /** 创建时间（ISO 字符串），便于排查与排序 */
   createdAt: string;

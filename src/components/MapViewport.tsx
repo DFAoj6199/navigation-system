@@ -105,6 +105,16 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   // 点选只在“比例尺”页签生效，避免隐藏标记后仍在地图上记录校准点
   const scalePickActive = scalePicking && activeTab === 'scale';
 
+  /**
+   * “路口/交叉点”类型节点只在“节点管理”页签显示。
+   * 其余页签（查看模式、道路管理、路径搜索、比例尺、项目）仅显示“出入口”和“地标”，
+   * 让地图更干净。节点本身、以及依赖节点的道路与寻路都不受影响——只影响画出来的标记。
+   */
+  const showJunctionNodes = activeTab === 'nodes';
+  const visibleNodes = showJunctionNodes
+    ? nodes
+    : nodes.filter((node) => node.type !== 'junction');
+
   /** 正在拖动的中间点（草稿点或已存道路的中间点） */
   const pointDragRef = useRef<
     | { kind: 'draft'; index: number }
@@ -502,7 +512,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
               </g>
             )}
 
-            {nodes.map((node) => {
+            {visibleNodes.map((node) => {
               const isSelected = node.id === selectedNodeId;
               // 区分普通节点 / 起点 / 终点 / 所选路线上的节点
               const role = nodeRole(node.id);

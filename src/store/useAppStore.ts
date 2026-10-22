@@ -336,7 +336,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCamera: (camera) => set({ camera }),
   markViewInitialized: () => set({ viewInitialized: true }),
 
-  addNodeAtPixel: (x, y, name, type = 'junction') => {
+  // 默认建成“地标”：地图在非节点管理页签只显示出入口与地标，
+  // 若默认建成路口，用户在地图上新加的节点会看不见。
+  addNodeAtPixel: (x, y, name, type = 'landmark') => {
     const { imageWidth, imageHeight, nodes } = get();
     if (!get().image) {
       return { ok: false, error: '请先上传地图图片' };

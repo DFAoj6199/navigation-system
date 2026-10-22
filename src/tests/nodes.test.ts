@@ -100,4 +100,12 @@ describe('createNode / nextNodeName', () => {
     const three = createNode({ x: 2, y: 2 }, '节点 3');
     expect(nextNodeName([one, two, three])).toBe('节点 4');
   });
+
+  it('新建节点默认类型为地标（地标在非节点管理页签也可见）', () => {
+    // 路口类型只在“节点管理”页签显示，若默认建成路口，
+    // 用户新加的节点在其他页签会“看不见”，因此默认必须是地标。
+    expect(createNode({ x: 0, y: 0 }, 'A').type).toBe('landmark');
+    // 仍可显式指定为路口
+    expect(createNode({ x: 0, y: 0 }, 'B', 'junction').type).toBe('junction');
+  });
 });

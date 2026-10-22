@@ -12,10 +12,17 @@ export function createNodeId(): string {
   return `${ID_PREFIX}-${Date.now().toString(36)}-${random}`;
 }
 
+/**
+ * 创建节点。
+ *
+ * 默认类型为“地标”而不是“路口”：地图在非“节点管理”页签下只显示出入口与地标，
+ * 路口节点会被隐藏。若默认建成路口，用户新加的节点在大多数页签下会“看不见”，
+ * 因此路口必须由用户在节点管理中显式指定。
+ */
 export function createNode(
   point: { x: number; y: number },
   name: string,
-  type: NodeType = 'junction',
+  type: NodeType = 'landmark',
 ): MapNode {
   return {
     id: createNodeId(),
