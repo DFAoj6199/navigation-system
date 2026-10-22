@@ -1466,6 +1466,82 @@ async function main() {
       `查看模式 节点列表=${hiddenInView.nodeList}/道路面板=${hiddenInView.roadPanel}；节点页签 节点=${shownInNodes.nodeList}/道路面板=${shownInNodes.roadPanel}；道路页签 道路面板=${shownInRoads.roadPanel}/节点=${shownInRoads.nodeList}`,
     );
 
+    // ---------- 48b. 道路选中切换：再次点击取消选中并恢复地图不亮 ----------
+    // 复用前面阶段5 建好的道路（VA-VB 绕行道路、VA-VC、VC-VB）
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(250);
+
+    /** 读取道路列表与地图的实际选中/高亮状态 */
+    const readRoadSelection = async () =>
+      page.evaluate(() => {
+        const items = [...document.querySelectorAll('[data-testid="road-item"]')];
+        const selectedIndexes = items
+          .map((li, i) => (li.className.includes('Selected') ? i : -1))
+          .filter((i) => i >= 0);
+        const roads = [...document.querySelectorAll('[data-road-line="true"]')].map((g) => {
+          const main = [...g.querySelectorAll('polyline')].find((l) => {
+            const st = l.getAttribute('stroke');
+            return st && st !== 'transparent' && st !== '#ffffff' && st !== '#fbbf24' && st !== '#7c3aed';
+          });
+          return {
+            roadId: g.getAttribute('data-road-id'),
+            stroke: main?.getAttribute('stroke'),
+            width: Number(main?.getAttribute('stroke-width') ?? 0),
+          };
+        });
+        return {
+          selectedCount: selectedIndexes.length,
+          selectedIndexes,
+          // 选中外发光描边
+          glowCount: document.querySelectorAll('polyline[stroke="#fbbf24"]').length,
+          roads,
+        };
+      });
+
+    // 第一次点击第 1 条：选中
+    await page.locator('[data-testid="road-item"]').nth(0).click();
+    await page.waitForTimeout(320);
+    const sel1 = await readRoadSelection();
+    const sel1Road = sel1.roads.find((r) => r.stroke === '#b45309');
+
+    // 第二次点击同一条：取消选中
+    await page.locator('[data-testid="road-item"]').nth(0).click();
+    await page.waitForTimeout(320);
+    const sel2 = await readRoadSelection();
+
+    record(
+      '道路管理：选中一条道路后高亮显示',
+      sel1.selectedCount === 1 && sel1.selectedIndexes[0] === 0 && Boolean(sel1Road) && sel1.glowCount > 0,
+      `选中项=${JSON.stringify(sel1.selectedIndexes)}，选中色道路=${sel1Road ? sel1Road.roadId : '无'}，外发光描边数=${sel1.glowCount}`,
+    );
+    record(
+      '道路管理：再次点击同一条道路取消选中，地图高亮恢复未选中',
+      sel2.selectedCount === 0 &&
+        sel2.glowCount === 0 &&
+        sel2.roads.every((r) => r.stroke === '#0f766e'),
+      `选中项=${JSON.stringify(sel2.selectedIndexes)}，外发光描边数=${sel2.glowCount}，道路颜色=${sel2.roads.map((r) => r.stroke).join('/')}`,
+    );
+
+    // 第三次点击：可重新选中
+    await page.locator('[data-testid="road-item"]').nth(0).click();
+    await page.waitForTimeout(320);
+    const sel3 = await readRoadSelection();
+    record(
+      '道路管理：取消后可再次点击重新选中',
+      sel3.selectedCount === 1 && sel3.selectedIndexes[0] === 0,
+      `选中项=${JSON.stringify(sel3.selectedIndexes)}`,
+    );
+
+    // 点击另一条：切换而非取消
+    await page.locator('[data-testid="road-item"]').nth(1).click();
+    await page.waitForTimeout(320);
+    const sel4 = await readRoadSelection();
+    record(
+      '道路管理：点击另一条道路为切换选中而非取消',
+      sel4.selectedCount === 1 && sel4.selectedIndexes[0] === 1,
+      `选中项=${JSON.stringify(sel4.selectedIndexes)}`,
+    );
+
     // ---------- 49. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');

@@ -71,6 +71,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   const addNodeAtPixel = useAppStore((s) => s.addNodeAtPixel);
   const selectNode = useAppStore((s) => s.selectNode);
   const selectRoad = useAppStore((s) => s.selectRoad);
+  const toggleRoadSelection = useAppStore((s) => s.toggleRoadSelection);
   const addDraftPoint = useAppStore((s) => s.addDraftPoint);
   const updateDraftPoint = useAppStore((s) => s.updateDraftPoint);
   const updateRoadPoint = useAppStore((s) => s.updateRoadPoint);
@@ -447,7 +448,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
               draftToNodeId={draft?.toNodeId}
               editable={mode === 'pan' || mode === 'draw'}
               highlightedRoadIds={search.highlightedRoadIds}
-              onSelectRoad={selectRoad}
+              onSelectRoad={toggleRoadSelection}
               onDragPointStart={handleDragRoadPointStart}
               onDragDraftPointStart={handleDragDraftPointStart}
             />

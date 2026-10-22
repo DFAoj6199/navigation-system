@@ -185,6 +185,11 @@ interface AppState {
   renameRoad: (id: string, name: string) => { ok: boolean; error?: string };
   deleteRoad: (id: string) => void;
   selectRoad: (id: string | null) => void;
+  /**
+   * 切换道路选中状态：再次点击已选中的道路则取消选中。
+   * 取消选中时地图上的道路高亮一并恢复为普通状态。
+   */
+  toggleRoadSelection: (id: string) => void;
   /** 拖动编辑已存在道路的中间点 */
   updateRoadPoint: (roadId: string, index: number, x: number, y: number) => { ok: boolean; error?: string };
 
@@ -546,6 +551,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectRoad: (id) => set({ selectedRoadId: id, selectedNodeId: null }),
+
+  toggleRoadSelection: (id) => {
+    const { selectedRoadId } = get();
+    // 再次点击同一条道路 -> 取消选中；否则选中该道路
+    if (selectedRoadId === id) {
+      set({ selectedRoadId: null, selectedNodeId: null });
+      return;
+    }
+    set({ selectedRoadId: id, selectedNodeId: null });
+  },
 
   updateRoadPoint: (roadId, index, x, y) => {
     const { roads, imageWidth, imageHeight } = get();

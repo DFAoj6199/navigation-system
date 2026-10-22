@@ -34,7 +34,7 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
   const undoDraftPoint = useAppStore((s) => s.undoDraftPoint);
   const clearDraftPoints = useAppStore((s) => s.clearDraftPoints);
   const deleteRoad = useAppStore((s) => s.deleteRoad);
-  const selectRoad = useAppStore((s) => s.selectRoad);
+  const toggleRoadSelection = useAppStore((s) => s.toggleRoadSelection);
   const renameRoad = useAppStore((s) => s.renameRoad);
   const pushNotice = useAppStore((s) => s.pushNotice);
 
@@ -243,7 +243,7 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
                 data-testid="road-item"
                 data-road-id={road.id}
                 data-point-count={road.points.length}
-                onClick={() => selectRoad(road.id)}
+                onClick={() => toggleRoadSelection(road.id)}
               >
                 <div className={styles.itemHeader}>
                   <span className={styles.order}>#{index + 1}</span>
