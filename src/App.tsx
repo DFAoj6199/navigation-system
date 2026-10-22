@@ -22,11 +22,14 @@ export default function App() {
   const nodeCount = useAppStore((s) => s.nodes.length);
   const roadCount = useAppStore((s) => s.roads.length);
   const draft = useAppStore((s) => s.draft);
+  const setRoadEndpointPicking = useAppStore((s) => s.setRoadEndpointPicking);
 
   // 切换管理页签时退出绘制模式，避免误点添加中间点
   const changeTab = (next: ManageTab) => {
     setTab(next);
     if (mode === 'draw' && next !== 'roads') setMode('pan');
+    // 离开道路管理页签时清掉“点地图选端点”状态，避免在其他页签点节点被误记为端点
+    if (next !== 'roads') setRoadEndpointPicking(null);
   };
 
   const showLists = tab !== 'view';

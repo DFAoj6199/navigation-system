@@ -112,6 +112,18 @@ interface AppState {
   // ---- 道路绘制 ----
   /** 当前绘制草稿；null 表示不在绘制中 */
   draft: RoadDraft | null;
+  /**
+   * 正在等待用户在地图上点选作为道路端点的位置：'from' 起点、'to' 终点、null 未在选取。
+   * 仅用于“点击地图上的节点选择端点”，不影响绘制草稿本身。
+   */
+  roadEndpointPicking: 'from' | 'to' | null;
+  /** 通过点击地图节点选中的端点：起点 id / 终点 id（空串表示未选） */
+  pickedFromNodeId: string;
+  pickedToNodeId: string;
+  /** 开始 / 结束在地图上点选道路端点 */
+  setRoadEndpointPicking: (target: 'from' | 'to' | null) => void;
+  /** 记录一次地图点选到的端点节点 */
+  applyPickedRoadEndpoint: (nodeId: string) => void;
 
   // ---- 寻路 ----
   /** 起点节点 id */
@@ -231,6 +243,9 @@ const initialView = {
   camera: { zoom: 1, offsetX: 0, offsetY: 0 },
   viewInitialized: false,
   draft: null,
+  roadEndpointPicking: null,
+  pickedFromNodeId: '',
+  pickedToNodeId: '',
 } satisfies Partial<AppState>;
 
 /** 初始寻路状态 */
@@ -424,6 +439,29 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // ---------------- 道路 ----------------
 
+  setRoadEndpointPicking: (target) => set({ roadEndpointPicking: target }),
+
+  /**
+   * 把地图上点到的节点记为当前正在选取的端点。
+   * 选完起点后自动切到“选终点”，两个都选好后自动退出点选状态，
+   * 用户只需在地图上点两下即可完成起终点选择。
+   */
+  applyPickedRoadEndpoint: (nodeId) => {
+    const { roadEndpointPicking, pickedFromNodeId, nodes } = get();
+    if (!roadEndpointPicking) return;
+    if (!nodes.some((n) => n.id === nodeId)) return;
+
+    if (roadEndpointPicking === 'from') {
+      set({ pickedFromNodeId: nodeId, roadEndpointPicking: 'to' });
+      return;
+    }
+    // 选终点：不能与起点相同
+    if (pickedFromNodeId && nodeId === pickedFromNodeId) {
+      return;
+    }
+    set({ pickedToNodeId: nodeId, roadEndpointPicking: null });
+  },
+
   startRoadDraft: (fromNodeId, toNodeId) => {
     const { nodes, roads } = get();
     if (!get().image) return { ok: false, error: '请先上传地图图片' };
@@ -439,6 +477,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       draft: { fromNodeId, toNodeId, points: [] },
       selectedRoadId: null,
       selectedNodeId: null,
+      // 端点已齐备并开始绘制，退出点选状态并清空临时选中结果，
+      // 避免下次新建道路时残留上一次的端点
+      roadEndpointPicking: null,
+      pickedFromNodeId: '',
+      pickedToNodeId: '',
     });
     return { ok: true };
   },

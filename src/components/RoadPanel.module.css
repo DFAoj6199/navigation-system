@@ -115,6 +115,46 @@
   padding-bottom: 8px;
 }
 
+.pickRow {
+  display: flex;
+  gap: 8px;
+}
+
+.pickButton {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #0f766e;
+  background: #fff;
+  border: 1px solid #99f6e4;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.pickButton:hover:not(:disabled) {
+  background: #f0fdfa;
+  border-color: #0f766e;
+}
+
+.pickButton:disabled {
+  color: #94a3b8;
+  border-color: #e2e8f0;
+  cursor: not-allowed;
+}
+
+.pickHint {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+}
+
 .primaryButton {
   border: none;
   border-radius: 8px;

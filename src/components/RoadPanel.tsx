@@ -38,9 +38,21 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
   const renameRoad = useAppStore((s) => s.renameRoad);
   const pushNotice = useAppStore((s) => s.pushNotice);
 
-  const [fromId, setFromId] = useState('');
-  const [toId, setToId] = useState('');
+  // 手动通过下拉框选择的端点（地图点选的结果优先级更高）
+  const [manualFromId, setManualFromId] = useState('');
+  const [manualToId, setManualToId] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // 通过点击地图上的节点选中的端点：直接作为派生值参与渲染，
+  // 不用 effect 回写 state（避免额外的渲染轮次与状态不同步）。
+  const roadEndpointPicking = useAppStore((s) => s.roadEndpointPicking);
+  const pickedFromNodeId = useAppStore((s) => s.pickedFromNodeId);
+  const pickedToNodeId = useAppStore((s) => s.pickedToNodeId);
+  const setRoadEndpointPicking = useAppStore((s) => s.setRoadEndpointPicking);
+
+  // 地图点选优先，其次是下拉框手动选择
+  const fromId = pickedFromNodeId || manualFromId;
+  const toId = pickedToNodeId || manualToId;
 
   const canStart = Boolean(image) && nodes.length >= 2;
 
@@ -126,7 +138,7 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
                 disabled={!canStart}
                 data-testid="road-from-select"
                 onChange={(e) => {
-                  setFromId(e.target.value);
+                  setManualFromId(e.target.value);
                   setError(null);
                 }}
               >
@@ -144,7 +156,7 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
                 disabled={!canStart}
                 data-testid="road-to-select"
                 onChange={(e) => {
-                  setToId(e.target.value);
+                  setManualToId(e.target.value);
                   setError(null);
                 }}
               >
@@ -155,6 +167,33 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
               </select>
             </label>
           </div>
+          <div className={styles.pickRow}>
+            <button
+              type="button"
+              className={styles.pickButton}
+              disabled={!canStart}
+              onClick={() => setRoadEndpointPicking(roadEndpointPicking === 'from' ? null : 'from')}
+              data-testid="road-pick-from"
+            >
+              {roadEndpointPicking === 'from' ? '请在地图上点起点…' : '点地图选起点'}
+            </button>
+            <button
+              type="button"
+              className={styles.pickButton}
+              disabled={!canStart}
+              onClick={() => setRoadEndpointPicking(roadEndpointPicking === 'to' ? null : 'to')}
+              data-testid="road-pick-to"
+            >
+              {roadEndpointPicking === 'to' ? '请在地图上点终点…' : '点地图选终点'}
+            </button>
+          </div>
+          {roadEndpointPicking && (
+            <p className={styles.pickHint} data-testid="road-pick-hint">
+              {roadEndpointPicking === 'from'
+                ? '已进入起点选取：在地图上单击任意节点设为起点，选完会自动切到选终点。'
+                : '已进入终点选取：在地图上单击任意节点设为终点。'}
+            </p>
+          )}
           <button
             type="button"
             className={styles.primaryButton}

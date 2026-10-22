@@ -61,12 +61,14 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectedRoadId = useAppStore((s) => s.selectedRoadId);
   const draft = useAppStore((s) => s.draft);
+  const roadEndpointPicking = useAppStore((s) => s.roadEndpointPicking);
   const search = useAppStore((s) => s.search);
   const startNodeId = useAppStore((s) => s.startNodeId);
   const endNodeId = useAppStore((s) => s.endNodeId);
   const camera = useAppStore((s) => s.camera);
   const viewInitialized = useAppStore((s) => s.viewInitialized);
   const setCamera = useAppStore((s) => s.setCamera);
+  const applyPickedRoadEndpoint = useAppStore((s) => s.applyPickedRoadEndpoint);
   const markViewInitialized = useAppStore((s) => s.markViewInitialized);
   const addNodeAtPixel = useAppStore((s) => s.addNodeAtPixel);
   const selectNode = useAppStore((s) => s.selectNode);
@@ -533,8 +535,14 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
                   data-pixel-x={node.point.x}
                   data-pixel-y={node.point.y}
                   className={styles.nodeGroup}
+                  data-road-endpoint-pick={roadEndpointPicking ? 'true' : undefined}
                   onPointerDown={(event) => {
                     event.stopPropagation();
+                    // 道路端点选取中：把该节点记为起点/终点，而不是普通选中
+                    if (roadEndpointPicking) {
+                      applyPickedRoadEndpoint(node.id);
+                      return;
+                    }
                     selectNode(node.id);
                   }}
                   role="button"
