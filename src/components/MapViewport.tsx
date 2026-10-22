@@ -70,6 +70,12 @@ export function MapViewport({ mode }: MapViewportProps) {
   const updateDraftPoint = useAppStore((s) => s.updateDraftPoint);
   const updateRoadPoint = useAppStore((s) => s.updateRoadPoint);
   const pushNotice = useAppStore((s) => s.pushNotice);
+  // 比例尺校准：点选模式下点击地图即记录一个校准点
+  const scalePicking = useAppStore((s) => s.scalePicking);
+  const scalePointA = useAppStore((s) => s.scalePointA);
+  const scalePointB = useAppStore((s) => s.scalePointB);
+  const scaleNextPoint = useAppStore((s) => s.scaleNextPoint);
+  const pickScalePoint = useAppStore((s) => s.pickScalePoint);
 
   /** 正在拖动的中间点（草稿点或已存道路的中间点） */
   const pointDragRef = useRef<
@@ -200,6 +206,8 @@ export function MapViewport({ mode }: MapViewportProps) {
     if (!image) return;
     if (event.button !== 0 && event.button !== 1) return;
     // 添加节点 / 绘制道路模式下，左键点击交给 click 逻辑处理，不进入平移
+    // 校准点选模式下左键用于记录校准点，不进入平移
+    if (scalePicking && event.button === 0) return;
     if ((mode === 'add' || mode === 'draw') && event.button === 0) return;
     const el = canvasRef.current;
     if (!el) return;
@@ -266,6 +274,15 @@ export function MapViewport({ mode }: MapViewportProps) {
     }
     // 只把“未发生拖动的左键抬起”视为一次点击
     const isClick = event.type === 'pointerup' && event.button === 0 && drag === null;
+
+    if (isClick && scalePicking) {
+      const pixel = toPixel(event.clientX, event.clientY);
+      if (!pixel) return;
+      const point = { x: Math.round(pixel.x), y: Math.round(pixel.y) };
+      pickScalePoint(point);
+      pushNotice('info', `已记录校准点 (${point.x}, ${point.y})`);
+      return;
+    }
 
     if (isClick && mode === 'add') {
       const pixel = toPixel(event.clientX, event.clientY);
@@ -338,8 +355,8 @@ export function MapViewport({ mode }: MapViewportProps) {
         <span className={styles.zoomValue} data-testid="zoom-value">{Math.round(camera.zoom * 100)}%</span>
         <button type="button" onClick={() => zoomBy(ZOOM_STEP)} title="放大" aria-label="放大">＋</button>
         <span className={styles.divider} />
-        <button type="button" onClick={fitToScreen}>适配窗口</button>
-        <button type="button" onClick={resetToActualSize}>原始像素 1:1</button>
+        <button type="button" onClick={fitToScreen} data-testid="view-fit">适配窗口</button>
+        <button type="button" onClick={resetToActualSize} data-testid="view-actual">原始像素 1:1</button>
         <span className={styles.divider} />
         <span className={styles.meta} data-testid="image-meta">
           {image.fileName} · {imageWidth}×{imageHeight}px
@@ -414,6 +431,36 @@ export function MapViewport({ mode }: MapViewportProps) {
               endNodeId={endNodeId}
               nodes={nodes}
             />
+            {/* 比例尺校准点与连线 */}
+            {(scalePointA || scalePointB) && (
+              <g data-testid="scale-layer">
+                {scalePointA && scalePointB && (
+                  <line
+                    x1={scalePointA.x}
+                    y1={scalePointA.y}
+                    x2={scalePointB.x}
+                    y2={scalePointB.y}
+                    stroke="#dc2626"
+                    strokeWidth={3 / camera.zoom}
+                    strokeDasharray={`${8 / camera.zoom} ${5 / camera.zoom}`}
+                    data-testid="scale-line"
+                  />
+                )}
+                {scalePointA && (
+                  <g data-testid="scale-point-a-marker">
+                    <circle cx={scalePointA.x} cy={scalePointA.y} r={8 / camera.zoom} fill="#dc2626" stroke="#fff" strokeWidth={2.5 / camera.zoom} />
+                    <text x={scalePointA.x + 12 / camera.zoom} y={scalePointA.y} fontSize={12 / camera.zoom} fill="#dc2626" paintOrder="stroke" stroke="#fff" strokeWidth={3 / camera.zoom}>A</text>
+                  </g>
+                )}
+                {scalePointB && (
+                  <g data-testid="scale-point-b-marker">
+                    <circle cx={scalePointB.x} cy={scalePointB.y} r={8 / camera.zoom} fill="#dc2626" stroke="#fff" strokeWidth={2.5 / camera.zoom} />
+                    <text x={scalePointB.x + 12 / camera.zoom} y={scalePointB.y} fontSize={12 / camera.zoom} fill="#dc2626" paintOrder="stroke" stroke="#fff" strokeWidth={3 / camera.zoom}>B</text>
+                  </g>
+                )}
+              </g>
+            )}
+
             {nodes.map((node) => {
               const isSelected = node.id === selectedNodeId;
               // 标记尺寸随缩放反向补偿，保持屏幕上大小恒定、易点击
@@ -477,7 +524,9 @@ export function MapViewport({ mode }: MapViewportProps) {
         <span className={styles.statusHint}>
           {mode === 'add'
             ? '点击模式：在地图上单击即可在对应像素位置添加节点'
-            : mode === 'draw'
+            : scalePicking
+              ? '比例尺校准模式：点击地图记录校准点（原始像素坐标）'
+              : mode === 'draw'
               ? '绘制模式：在道路上连续单击添加中间点，点“完成绘制”保存'
               : '拖动模式：按住鼠标拖动平移，滚轮缩放；点击节点/道路可选中，拖动白色圆点可编辑中间点'}
         </span>
@@ -485,6 +534,11 @@ export function MapViewport({ mode }: MapViewportProps) {
       {mode === 'add' && (
         <div className={styles.addBanner} data-testid="add-mode-banner">
           ➕ 添加节点模式已开启：单击地图放置节点；完成后请切回“拖动 / 浏览”模式以免误加
+        </div>
+      )}
+      {scalePicking && (
+        <div className={styles.scaleBanner} data-testid="scale-mode-banner">
+          📏 比例尺校准中：请在地图上点击{scaleNextPoint === 'a' ? '第 1 个点（A）' : '第 2 个点（B）'}
         </div>
       )}
       {mode === 'draw' && (

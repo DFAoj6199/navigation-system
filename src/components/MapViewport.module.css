@@ -163,6 +163,15 @@
   font-size: 13px;
 }
 
+.scaleBanner {
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
 .drawBanner {
   padding: 7px 12px;
   border-radius: 8px;

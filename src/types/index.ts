@@ -7,6 +7,8 @@
  * 屏幕坐标、缩放比例、平移量只属于视图层（相机状态），绝不写入业务数据。
  */
 
+import type { MapScale } from '../lib/scale';
+
 /** 原始图片像素坐标。原点为图片左上角，x 向右、y 向下。 */
 export interface PixelPoint {
   x: number;
@@ -47,9 +49,7 @@ export interface MapImageMeta {
 /**
  * 地图工程数据。
  *
- * 说明：`roads` 已在类型层预留（双向道路 = 两个节点 + 一组折线坐标），
- * 这是为了让后续道路阶段能直接复用本阶段的数据结构。
- * 阶段1 不创建任何道路，`roads` 恒为空数组，也不实现任何道路功能。
+ * `scale` 为阶段4 引入的比例尺校准数据；未校准时为 null。
  */
 export interface MapProject {
   /** 数据结构版本号，便于后续迁移 */
@@ -58,8 +58,9 @@ export interface MapProject {
   nodes: MapNode[];
   /** 阶段2：双向道路列表 */
   roads: Road[];
+  /** 阶段4：比例尺校准（未校准时为 null） */
+  scale: MapScale | null;
 }
-
 /**
  * 双向道路数据结构。
  *

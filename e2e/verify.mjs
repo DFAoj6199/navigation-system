@@ -911,7 +911,259 @@ async function main() {
     );
     await page.screenshot({ path: path.join(SHOT_DIR, '10-paths.png') });
 
-    // ---------- 31. 控制台无错误 ----------
+    // ==========================================================
+    // 阶段 4：比例尺校准与道路距离估算
+    // ==========================================================
+
+    /** 读取比例尺相关界面状态 */
+    const readScaleUi = async () =>
+      page.evaluate(() => {
+        const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? null;
+        return {
+          calibrated: document.querySelector('[data-testid="scale-status"]')?.getAttribute('data-calibrated') ?? null,
+          ratio: text('[data-testid="scale-ratio"]'),
+          pixelDistance: text('[data-testid="scale-pixel-distance"]'),
+          uncalibratedWarning: text('[data-testid="scale-uncalibrated-warning"]'),
+          error: text('[data-testid="scale-error"]'),
+          pointA: text('[data-testid="scale-point-a"]'),
+          pointB: text('[data-testid="scale-point-b"]'),
+        };
+      });
+
+    /**
+     * 在地图上按原始像素坐标点选（校准模式用）。
+     * 若目标像素被缩放/平移推到画布外，直接点击不会命中，因此先复位视图。
+     */
+    const clickPixel = async (x, y) => {
+      const c = await readCamera(page);
+      const pt = pixelToScreenPoint(c, x, y);
+      const insideCanvas =
+        pt.x >= c.canvasLeft && pt.x <= c.canvasLeft + c.canvasWidth &&
+        pt.y >= c.canvasTop && pt.y <= c.canvasTop + c.canvasHeight;
+      if (!insideCanvas) {
+        await page.click('[data-testid="view-fit"]');
+        await page.waitForTimeout(250);
+      }
+      const c2 = await readCamera(page);
+      const pt2 = pixelToScreenPoint(c2, x, y);
+      await page.mouse.click(pt2.x, pt2.y);
+      await page.waitForTimeout(160);
+    };
+
+    /** 完成一次校准：点选 A(0,0)、B(300,400) → 像素距离恰为 500 */
+    const calibrate = async (distance, unit) => {
+      await page.click('[data-testid="tab-scale"]');
+      await page.waitForTimeout(180);
+      const toggleText = (await page.textContent('[data-testid="scale-pick-toggle"]')).trim();
+      if (!toggleText.includes('退出')) {
+        await page.click('[data-testid="scale-pick-toggle"]');
+        await page.waitForTimeout(160);
+      }
+      await clickPixel(0, 0);
+      await clickPixel(300, 400);
+      await page.fill('[data-testid="scale-distance-input"]', String(distance));
+      await page.selectOption('[data-testid="scale-unit-select"]', unit);
+      await page.click('[data-testid="scale-apply"]');
+      await page.waitForTimeout(350);
+    };
+
+    // ---------- 32. 未校准时不得把像素当米 ----------
+    // 重新建立可人工计算的折线：S1(100,100) - S2(700,100)，中间点 (200,300),(400,400),(600,300)
+    // 人工推导：4 段 × √(100²+200²) = 4 × 223.6068 = 894.4272 像素
+    await clearAllNodes();
+    await addNodeByName(100, 100, 'S1');
+    await addNodeByName(700, 100, 'S2');
+    // 关键：先“适配窗口”，保证整张底图都在画布可见范围内。
+    // 若用“原始像素 1:1”，图片比画布大，offset 为负，(200,300) 这类点会被推到画布外，
+    // 点击就不会被记录，折线长度也就不等于人工推导值（这是测试点击位置问题，产品计算本身无误）。
+    await page.click('[data-testid="view-fit"]');
+    await page.waitForTimeout(250);
+    await connectNodes('S1', 'S2', [[200, 300], [400, 400], [600, 300]]);
+    // 立刻核对：中间点必须精确等于人工指定的三个顶点
+    const recordedMids = await page.getAttribute('[data-testid="road-point-count"]', 'data-points');
+    if (recordedMids !== '200,300 400,400 600,300') {
+      throw new Error(`折线中间点与预期不符：${recordedMids}`);
+    }
+
+    await page.click('[data-testid="tab-scale"]');
+    await page.waitForTimeout(200);
+    let ui = await readScaleUi();
+    record(
+      '未校准时明确提示，且不存在比例尺',
+      ui.calibrated === 'false' && (ui.uncalibratedWarning ?? '').includes('未校准'),
+      `状态=${ui.calibrated}，警告=“${(ui.uncalibratedWarning ?? '').slice(0, 30)}…”`,
+    );
+
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(180);
+    const pathOpts0 = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', pathOpts0.find((o) => o.t === 'S1').v);
+    await page.selectOption('[data-testid="path-end-select"]', pathOpts0.find((o) => o.t === 'S2').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(350);
+    const uncalShortest = (await page.textContent('[data-testid="shortest-length"]')).trim();
+    const uncalUnit = (await page.textContent('[data-testid="length-unit"]')).trim();
+    // 读取图层里该条道路的真实折线像素长度作为基准（与人工推导 894.4272 对比）
+    const uncalExpectedPx = await page.evaluate(() => {
+      const li = document.querySelector('[data-testid="path-item"]');
+      return li ? Number(li.getAttribute('data-length')) : null;
+    });
+    record(
+      '未校准时长度只显示像素，绝不显示为米',
+      uncalExpectedPx !== null &&
+        uncalShortest.includes(`${uncalExpectedPx.toFixed(1)} 像素`) &&
+        !uncalShortest.includes('米') &&
+        uncalUnit.includes('未校准'),
+      `折线像素长度=${uncalExpectedPx}，显示=“${uncalShortest}”，单位标签=“${uncalUnit}”`,
+    );
+
+    // ---------- 33. 在地图上点选校准点，坐标换算正确 ----------
+    await page.click('[data-testid="tab-scale"]');
+    await page.waitForTimeout(200);
+    await page.click('[data-testid="scale-pick-toggle"]');
+    await page.waitForTimeout(180);
+    await clickPixel(0, 0);
+    await clickPixel(300, 400);
+    ui = await readScaleUi();
+    // 人工核对：A(0,0)、B(300,400) → √(300²+400²) = 500 像素
+    const pixDistOk = (ui.pixelDistance ?? '').includes('500.00');
+    record(
+      '地图点选的两个校准点按原始像素坐标记录，像素距离=500.00',
+      (ui.pointA ?? '').includes('0') && (ui.pointB ?? '').includes('300') && pixDistOk,
+      `A=${ui.pointA}，B=${ui.pointB}，${ui.pixelDistance}`,
+    );
+
+    // ---------- 34. 校准 500 米 / 500 像素 → 1 米每像素 ----------
+    await page.fill('[data-testid="scale-distance-input"]', '500');
+    await page.selectOption('[data-testid="scale-unit-select"]', 'm');
+    await page.click('[data-testid="scale-apply"]');
+    await page.waitForTimeout(400);
+    ui = await readScaleUi();
+    record(
+      '校准 500 米 / 500 像素 → 1 像素 ≈ 1.0000 米',
+      ui.calibrated === 'true' && (ui.ratio ?? '').includes('1.0000'),
+      `状态=${ui.calibrated}，比例尺=“${ui.ratio}”`,
+    );
+
+    // ---------- 35. 人工折线：894.4272 像素 → 894.4 米 ----------
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(200);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(350);
+    const calShortest = (await page.textContent('[data-testid="shortest-length"]')).trim();
+    const calItem = (await page.textContent('[data-testid="path-item-length"]')).trim();
+    const calExpectedPx = await page.evaluate(() => {
+      const li = document.querySelector('[data-testid="path-item"]');
+      return li ? Number(li.getAttribute('data-length')) : null;
+    });
+    // 1 米/像素时，米数应等于像素数；同时用人工推导值 894.4272 做区间核对
+    const pxMatchesManual = calExpectedPx !== null && Math.abs(calExpectedPx - 894.4272) < 0.01;
+    record(
+      '人工折线 4×√(100²+200²)=894.4272 像素 → 校准后显示 894.4 米',
+      pxMatchesManual && calShortest.includes(`${calExpectedPx.toFixed(1)} 米`) && calItem.includes(`${calExpectedPx.toFixed(1)} 米`),
+      `像素长度=${calExpectedPx}（人工推导 894.4272），最短路径=“${calShortest}”，列表长度=“${calItem}”`,
+    );
+
+    // 道路列表同样显示实际长度
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(250);
+    const roadLenCal = (await page.textContent('[data-testid="road-length"]')).trim();
+    record(
+      '道路管理列表显示实际长度（米）与像素',
+      roadLenCal.includes(`${calExpectedPx.toFixed(1)} 米`) && roadLenCal.includes(`${calExpectedPx.toFixed(1)} 像素`),
+      `道路长度=“${roadLenCal}”，基准像素长度=${calExpectedPx}`,
+    );
+
+    // ---------- 36. 比例尺变化后长度与最短路径按预期更新 ----------
+    // 改为 1000 米 / 500 像素 = 2 米/像素 → 894.4272 像素 = 1788.8544 米 = 1.79 千米
+    await calibrate(1000, 'm');
+    ui = await readScaleUi();
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(200);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(350);
+    const doubled = (await page.textContent('[data-testid="shortest-length"]')).trim();
+    // 人工核对：894.4272 像素 × 2 米/像素 = 1788.8544 米 = 1.79 千米
+    const doubledKm = (calExpectedPx * 2 / 1000).toFixed(2);
+    record(
+      '比例尺改为 2 米/像素后，实际距离翻倍为 1.79 千米（像素长度不变）',
+      (ui.ratio ?? '').includes('2.0000') &&
+        doubled.includes(`${doubledKm} 千米`) &&
+        doubled.includes(`${calExpectedPx.toFixed(1)} 像素`),
+      `比例尺=“${ui.ratio}”，长度=“${doubled}”，人工推导 ${calExpectedPx}×2=${calExpectedPx * 2} 米=${doubledKm} 千米`,
+    );
+
+    // ---------- 37. 千米单位输入等价换算 ----------
+    // 0.5 千米 / 500 像素 → 1 米/像素（与 500 米等价）
+    await calibrate(0.5, 'km');
+    ui = await readScaleUi();
+    record(
+      '千米单位输入正确换算：0.5 千米 / 500 像素 → 1.0000 米每像素',
+      (ui.ratio ?? '').includes('1.0000'),
+      `比例尺=“${ui.ratio}”`,
+    );
+
+    // ---------- 38. 缩放/拖动不改变已保存的比例尺与实际长度 ----------
+    const scaleBefore = (await page.textContent('[data-testid="scale-ratio"]')).trim();
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(200);
+    const roadLenBefore = (await page.textContent('[data-testid="road-length"]')).trim();
+
+    const camZ = await readCamera(page);
+    await page.mouse.move(camZ.canvasLeft + 500, camZ.canvasTop + 300);
+    for (let i = 0; i < 3; i += 1) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(200);
+    const camD = await readCamera(page);
+    await page.mouse.move(camD.canvasLeft + 600, camD.canvasTop + 350);
+    await page.mouse.down();
+    await page.mouse.move(camD.canvasLeft + 480, camD.canvasTop + 260, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+
+    await page.click('[data-testid="tab-scale"]');
+    await page.waitForTimeout(200);
+    const scaleAfter = (await page.textContent('[data-testid="scale-ratio"]')).trim();
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(200);
+    const roadLenAfter = (await page.textContent('[data-testid="road-length"]')).trim();
+    record(
+      '地图缩放、拖动后比例尺系数与道路实际长度均不变',
+      scaleBefore === scaleAfter && roadLenBefore === roadLenAfter,
+      `比例尺 前=“${scaleBefore}” 后=“${scaleAfter}”；道路长度 前=“${roadLenBefore}” 后=“${roadLenAfter}”`,
+    );
+
+    // ---------- 39. 非法输入被明确拒绝 ----------
+    await page.click('[data-testid="tab-scale"]');
+    await page.waitForTimeout(180);
+    await page.fill('[data-testid="scale-distance-input"]', '0');
+    await page.click('[data-testid="scale-apply"]');
+    await page.waitForTimeout(300);
+    const zeroErr = (await page.textContent('[data-testid="scale-error"]')).trim();
+    const ratioStill = (await page.textContent('[data-testid="scale-ratio"]')).trim();
+    record(
+      '距离为 0 被拒绝并给出明确提示，且原比例尺不被破坏',
+      zeroErr.includes('必须大于 0') && ratioStill === scaleBefore,
+      `提示=“${zeroErr}”，比例尺仍为“${ratioStill}”`,
+    );
+
+    const scaleDescText = await page.evaluate(() => {
+      const panel = document.querySelector('[data-testid="scale-panel"]');
+      return panel ? panel.innerText : '';
+    });
+    record(
+      '界面说明了透视变形下仅为近似估算',
+      scaleDescText.includes('透视变形') && scaleDescText.includes('近似估算'),
+      '校准面板明确标注：假定图片各方向比例一致，存在透视变形时仅为近似估算，不具备测绘级精度',
+    );
+
+    await page.screenshot({ path: path.join(SHOT_DIR, '11-scale.png') });
+
+    // ---------- 40. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');
   } finally {

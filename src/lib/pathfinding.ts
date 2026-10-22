@@ -1,5 +1,6 @@
 import type { MapNode, Road } from '../types';
 import { buildRoadPolyline, distance, polylineLength } from './roads';
+import { pixelsToMeters, type MapScale } from './scale';
 
 /**
  * 寻路相关的纯函数。
@@ -83,8 +84,13 @@ export interface PathResult {
   nodeIds: string[];
   /** 依次使用的道路 id */
   roadIds: string[];
-  /** 像素总长度 */
+  /** 像素总长度（各段道路折线长度之和，与比例尺无关） */
   length: number;
+  /**
+   * 实际距离（米）。未校准时为 null —— 绝不把像素长度当米。
+   * 计算方式：length × metersPerPixel，其中 metersPerPixel 来自比例尺校准。
+   */
+  meters: number | null;
   /** 完整折线（用于地图高亮） */
   polyline: { x: number; y: number }[];
 }
@@ -138,6 +144,7 @@ export function findAllSimplePaths(
   startId: string,
   endId: string,
   limits: SearchLimits = DEFAULT_SEARCH_LIMITS,
+  scale: MapScale | null = null,
 ): SearchOutcome {
   if (!startId || !endId) return { ok: false, error: '请选择起点和终点' };
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -149,7 +156,7 @@ export function findAllSimplePaths(
     return {
       ok: true,
       result: {
-        paths: [{ nodeIds: [startId], roadIds: [], length: 0, polyline: [] }],
+        paths: [{ nodeIds: [startId], roadIds: [], length: 0, meters: pixelsToMeters(0, scale), polyline: [] }],
         truncated: false,
         expansions: 0,
         complete: true,
@@ -172,6 +179,7 @@ export function findAllSimplePaths(
       nodeIds: [...nodeStack],
       roadIds: [...roadStack],
       length,
+      meters: pixelsToMeters(length, scale),
       polyline: polylineStack.map((p) => ({ x: p.x, y: p.y })),
     });
   };
@@ -254,6 +262,7 @@ export function findShortestPath(
   roads: Road[],
   startId: string,
   endId: string,
+  scale: MapScale | null = null,
 ): ShortestOutcome {
   if (!startId || !endId) return { ok: false, error: '请选择起点和终点' };
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -264,7 +273,7 @@ export function findShortestPath(
     return {
       ok: true,
       result: {
-        path: { nodeIds: [startId], roadIds: [], length: 0, polyline: [] },
+        path: { nodeIds: [startId], roadIds: [], length: 0, meters: pixelsToMeters(0, scale), polyline: [] },
         settled: 1,
       },
     };
@@ -343,6 +352,7 @@ export function findShortestPath(
         nodeIds,
         roadIds: edges.map((e) => e.roadId),
         length: dist.get(endId)!,
+        meters: pixelsToMeters(dist.get(endId)!, scale),
         polyline,
       },
       settled,

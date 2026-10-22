@@ -317,6 +317,13 @@
   font-size: 10.8px;
 }
 
+.roadLength {
+  font-size: 10.8px;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .actions {
   display: flex;
   gap: 4px;

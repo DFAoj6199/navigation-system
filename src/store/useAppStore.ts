@@ -16,6 +16,12 @@ import {
   type PathResult,
   type SearchLimits,
 } from '../lib/pathfinding';
+import {
+  createMapScale,
+  type MapScale,
+  type ScalePoint,
+  type ScaleValidationResult,
+} from '../lib/scale';
 
 /**
  * 应用状态（阶段2：地图显示 + 节点管理 + 双向道路管理）。
@@ -116,6 +122,30 @@ interface AppState {
   /** 在地图上高亮某条路径 */
   highlightPath: (path: PathResult | null) => void;
 
+  // ---- 比例尺校准（阶段4） ----
+  /** 已保存的比例尺；null 表示未校准 */
+  scale: MapScale | null;
+  /** 校准点 A（选取过程中） */
+  scalePointA: ScalePoint | null;
+  /** 校准点 B（选取过程中） */
+  scalePointB: ScalePoint | null;
+  /** 是否处于“在地图上点选校准点”模式 */
+  scalePicking: boolean;
+  /** 下一个待设置的点：'a' | 'b'；两个都设好后为 null */
+  scaleNextPoint: 'a' | 'b' | null;
+  /** 开始/结束在地图上点选校准点 */
+  setScalePicking: (on: boolean) => void;
+  /** 在地图上点选一个校准点（自动填充 A 或 B） */
+  pickScalePoint: (point: ScalePoint) => void;
+  /** 直接设置某个校准点（手动输入坐标时使用） */
+  setScalePoint: (which: 'a' | 'b', point: ScalePoint | null) => void;
+  /** 重置校准点选择（不清除已保存的比例尺） */
+  resetScalePoints: () => void;
+  /** 应用校准：校验并保存到项目状态 */
+  applyScale: (knownDistance: number | string, unit: string) => ScaleValidationResult;
+  /** 清除比例尺（回到未校准状态） */
+  clearScale: () => void;
+
   // ---- 提示 ----
   notices: Notice[];
 
@@ -188,6 +218,15 @@ const initialSearch = {
   searchLimits: DEFAULT_SEARCH_LIMITS,
 } satisfies Partial<AppState>;
 
+/** 比例尺初始状态：未校准 */
+const initialScale = {
+  scale: null,
+  scalePointA: null,
+  scalePointB: null,
+  scalePicking: false,
+  scaleNextPoint: 'a',
+} satisfies Partial<AppState>;
+
 /**
  * 图数据（节点/道路）发生变化时，旧的寻路结果即失效。
  * 返回一个“清空结果但保留用户设置的上限”的状态片段。
@@ -206,6 +245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   notices: [],
   ...initialView,
   ...initialSearch,
+  ...initialScale,
 
   setImage: (meta, objectUrl) => {
     const previousUrl = get().imageUrl;
@@ -220,6 +260,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       roads: [],
       startNodeId: '',
       endNodeId: '',
+      // 换图后旧比例尺对新图没有意义，必须清除，避免把像素当米
+      ...initialScale,
       ...initialView,
       ...invalidateSearch(get()),
       notices: get().notices,
@@ -238,6 +280,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       roads: [],
       startNodeId: '',
       endNodeId: '',
+      // 换图后旧比例尺对新图没有意义，必须清除，避免把像素当米
+      ...initialScale,
       ...initialView,
       ...invalidateSearch(get()),
       notices: get().notices,
@@ -550,7 +594,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 同时产出“全部简单路径”与“Dijkstra 最短路径”。
    */
   runSearch: (limits) => {
-    const { nodes, roads, startNodeId, endNodeId, searchLimits } = get();
+    const { nodes, roads, startNodeId, endNodeId, searchLimits, scale } = get();
     const effectiveLimits: SearchLimits = { ...searchLimits, ...limits };
 
     if (!startNodeId || !endNodeId) {
@@ -559,7 +603,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ok: false, error };
     }
 
-    const simple = findAllSimplePaths(nodes, roads, startNodeId, endNodeId, effectiveLimits);
+    const simple = findAllSimplePaths(nodes, roads, startNodeId, endNodeId, effectiveLimits, scale);
     if (!simple.ok) {
       set({
         search: { ...createInitialSearchState(effectiveLimits), status: 'error', error: simple.error },
@@ -567,7 +611,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { ok: false, error: simple.error };
     }
 
-    const shortest = findShortestPath(nodes, roads, startNodeId, endNodeId);
+    const shortest = findShortestPath(nodes, roads, startNodeId, endNodeId, scale);
     if (!shortest.ok) {
       set({
         search: { ...createInitialSearchState(effectiveLimits), status: 'error', error: shortest.error },
@@ -595,6 +639,70 @@ export const useAppStore = create<AppState>((set, get) => ({
     return { ok: true };
   },
 
+  // ---------------- 比例尺校准 ----------------
+
+  setScalePicking: (on) =>
+    set({
+      scalePicking: on,
+      // 进入点选模式时，若两点已齐，则从 A 重新开始
+      scaleNextPoint: on && get().scalePointA && get().scalePointB ? 'a' : get().scaleNextPoint,
+    }),
+
+  pickScalePoint: (point) => {
+    const { scalePointA, scalePointB, scaleNextPoint } = get();
+    // 两个点都已有值时，再次点选视为“重新开始”，先清空 A 再填 A
+    if (scalePointA && scalePointB) {
+      set({ scalePointA: point, scalePointB: null, scaleNextPoint: 'b' });
+      return;
+    }
+    if (!scalePointA || scaleNextPoint === 'a') {
+      set({ scalePointA: point, scaleNextPoint: 'b' });
+      return;
+    }
+    set({ scalePointB: point, scaleNextPoint: null, scalePicking: false });
+  },
+
+  setScalePoint: (which, point) => {
+    if (which === 'a') {
+      set({ scalePointA: point, scaleNextPoint: point ? 'b' : 'a' });
+    } else {
+      set({ scalePointB: point, scaleNextPoint: point ? null : 'b' });
+    }
+  },
+
+  resetScalePoints: () => set({ scalePointA: null, scalePointB: null, scaleNextPoint: 'a' }),
+
+  applyScale: (knownDistance, unit) => {
+    const { scalePointA, scalePointB, imageWidth, imageHeight } = get();
+    const result = createMapScale(
+      scalePointA,
+      scalePointB,
+      knownDistance,
+      unit,
+      imageWidth,
+      imageHeight,
+    );
+    if (!result.ok) return result;
+
+    set({
+      scale: result.scale,
+      scalePicking: false,
+      // 搜索结果中的实际距离依赖比例尺，必须失效以便重算
+      ...invalidateSearch(get()),
+    });
+    return result;
+  },
+
+  clearScale: () =>
+    set({
+      scale: null,
+      scalePointA: null,
+      scalePointB: null,
+      scalePicking: false,
+      scaleNextPoint: 'a',
+      ...invalidateSearch(get()),
+    }),
+
   // ---------------- 提示 ----------------
 
   pushNotice: (kind, text) => {
@@ -613,13 +721,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   dismissNotice: (id) => set({ notices: get().notices.filter((n) => n.id !== id) }),
 
   toProject: () => {
-    const { image, nodes, roads } = get();
+    const { image, nodes, roads, scale } = get();
     if (!image) return null;
     return {
       version: 1,
       image,
       nodes: sortNodes(nodes),
       roads,
+      scale,
     };
   },
 }));

@@ -6,6 +6,7 @@ import {
   formatPixelLength,
   type PathResult,
 } from '../lib/pathfinding';
+import { formatDistance } from '../lib/scale';
 import styles from './PathPanel.module.css';
 
 /**
@@ -23,6 +24,7 @@ export function PathPanel() {
   const endNodeId = useAppStore((s) => s.endNodeId);
   const search = useAppStore((s) => s.search);
   const searchLimits = useAppStore((s) => s.searchLimits);
+  const scale = useAppStore((s) => s.scale);
   const setStartNodeId = useAppStore((s) => s.setStartNodeId);
   const setEndNodeId = useAppStore((s) => s.setEndNodeId);
   const setSearchLimits = useAppStore((s) => s.setSearchLimits);
@@ -84,12 +86,21 @@ export function PathPanel() {
     <section className={styles.panel} aria-labelledby="path-panel-heading" data-testid="path-panel">
       <div className={styles.headingRow}>
         <h2 id="path-panel-heading" className={styles.heading}>路径搜索</h2>
-        <span className={styles.unitHint} data-testid="length-unit">长度单位：{LENGTH_UNIT}</span>
+        <span className={scale ? styles.unitHintOk : styles.unitHint} data-testid="length-unit">
+          {scale ? '长度单位：米（已校准）' : `长度单位：${LENGTH_UNIT}（未校准）`}
+        </span>
       </div>
 
       <p className={styles.desc}>
-        只使用已有的<strong>双向</strong>道路。道路长度按<strong>完整折线</strong>（含全部中间点）累加，
-        比例尺未校准，因此统一标注为<strong>像素</strong>，不代表实际米数。
+        只使用已有的<strong>双向</strong>道路。道路长度按<strong>完整折线</strong>（含全部中间点）逐段累加。
+        {scale ? (
+          <>已校准比例尺，长度以<strong>米</strong>显示，并同时给出像素值。</>
+        ) : (
+          <>
+            比例尺<strong>未校准</strong>，因此只显示<strong>像素</strong>长度，不代表实际米数；
+            请到“比例尺”页签完成校准。
+          </>
+        )}
       </p>
 
       {nodes.length === 0 ? (
@@ -221,7 +232,9 @@ export function PathPanel() {
                     {formatNodeSequence(search.shortest.nodeIds, nodes)}
                   </div>
                   <div className={styles.shortestLen} data-testid="shortest-length">
-                    长度 {formatPixelLength(search.shortest.length)}
+                    {search.shortest.meters !== null
+                      ? `长度 ${formatDistance(search.shortest.meters)}（${formatPixelLength(search.shortest.length)}）`
+                      : `长度 ${formatPixelLength(search.shortest.length)}`}
                   </div>
                 </div>
               )}
@@ -243,7 +256,9 @@ export function PathPanel() {
                       {formatNodeSequence(path.nodeIds, nodes)}
                     </span>
                     <span className={styles.length} data-testid="path-item-length">
-                      {formatPixelLength(path.length)}
+                      {path.meters !== null
+                        ? `${formatDistance(path.meters)} / ${formatPixelLength(path.length)}`
+                        : formatPixelLength(path.length)}
                     </span>
                   </li>
                 ))}

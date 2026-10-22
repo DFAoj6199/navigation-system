@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { MapMode } from './MapViewport';
-import { roadDisplayName } from '../lib/roads';
+import { buildRoadPolyline, polylineLength, roadDisplayName } from '../lib/roads';
+import { formatDistance, pixelsToMeters } from '../lib/scale';
 import styles from './RoadPanel.module.css';
 
 interface RoadPanelProps {
@@ -25,6 +26,7 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
   const roads = useAppStore((s) => s.roads);
   const draft = useAppStore((s) => s.draft);
   const selectedRoadId = useAppStore((s) => s.selectedRoadId);
+  const scale = useAppStore((s) => s.scale);
   const startRoadDraft = useAppStore((s) => s.startRoadDraft);
   const startRedrawRoad = useAppStore((s) => s.startRedrawRoad);
   const commitRoadDraft = useAppStore((s) => s.commitRoadDraft);
@@ -264,6 +266,17 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
                     ))}
                     {road.points.length > 3 && <span>…</span>}
                   </span>
+                  {from && to && (
+                    <span className={styles.roadLength} data-testid="road-length">
+                      {(() => {
+                        const px = polylineLength(buildRoadPolyline(road, from.point, to.point));
+                        const meters = pixelsToMeters(px, scale);
+                        return meters !== null
+                          ? `${formatDistance(meters)} / ${px.toFixed(1)} 像素`
+                          : `${px.toFixed(1)} 像素`;
+                      })()}
+                    </span>
+                  )}
                 </div>
                 <div className={styles.actions} onClick={(e) => e.stopPropagation()}>
                   <button type="button" onClick={() => handleRedraw(road.id)} data-testid="road-redraw">
