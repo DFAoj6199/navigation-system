@@ -182,7 +182,19 @@ const roadState = await page.evaluate(() => ({
 step('5. 创建双向道路（含多个中间点）', `道路 ${roadState.count} 条；各道路中间点数=${roadState.pointsPerRoad.join(',')}；地图箭头数=${roadState.arrows}；折线示例=${roadState.lines[0]}`);
 
 // ---------- 6. 修改折线、删除道路、删除节点 ----------
-// 修改折线：拖动天河北路(1200,600)那条道路的中间点，位置 500,550
+// 中间点默认不在图上画圆点；用于拖动的细小手柄只在“道路管理”页签且该道路被选中时出现。
+// 因此拖动前先选中一条带中间点的道路。
+const dotsBeforeSelect = await page.evaluate(() => document.querySelectorAll('[data-road-line="true"] circle').length);
+const firstRoadWithMid = await page.evaluate(() => {
+  const g = [...document.querySelectorAll('[data-road-line="true"]')].find((x) => Number(x.getAttribute('data-point-count')) > 0);
+  return g ? g.getAttribute('data-road-id') : null;
+});
+await page.click(`[data-testid="road-item"][data-road-id="${firstRoadWithMid}"]`);
+await page.waitForTimeout(300);
+const handlesAfterSelect = await page.evaluate(() => document.querySelectorAll('[data-road-point]').length);
+step('5b. 中间点不画圆点，选中道路后才出现拖动小手柄', `未选中时道路上的圆点数=${dotsBeforeSelect}；选中含中间点的道路后手柄数=${handlesAfterSelect}`);
+
+// 修改折线：拖动那条道路的中间点
 const dragBefore = await page.evaluate(() => [...document.querySelectorAll('[data-road-point]')].map((c) => `${c.getAttribute('data-pixel-x')},${c.getAttribute('data-pixel-y')}`));
 const handle = page.locator('[data-road-point]').first();
 const hb = await handle.boundingBox();
@@ -374,13 +386,14 @@ await page.screenshot({ path: path.join(OUT, '08-imported.png') });
 // ---------- 14. 验证导入后的地图/节点/道路/比例尺/搜索 ----------
 const consistency = await page.evaluate(() => {
   const markers = [...document.querySelectorAll('[data-node-marker]')].map((m) => ({ id: m.getAttribute('data-node-id'), x: +m.getAttribute('data-pixel-x'), y: +m.getAttribute('data-pixel-y') }));
-  const roads = [...document.querySelectorAll('[data-road-line="true"]')].map((g) => ({ pts: g.getAttribute('data-points'), handles: g.querySelectorAll('[data-road-point]').length }));
+  const roads = [...document.querySelectorAll('[data-road-line="true"]')].map((g) => ({ pts: g.getAttribute('data-points'), mids: Number(g.getAttribute('data-point-count')), dots: g.querySelectorAll('circle').length }));
   return { markers, roads };
 });
 const fileNodeMap = new Map(raw.nodes.map((n) => [n.id, `${n.point.x},${n.point.y}`]));
 const nodesMatch = consistency.markers.length === raw.nodes.length && consistency.markers.every((m) => fileNodeMap.get(m.id) === `${m.x},${m.y}`);
-const roadsMatch = consistency.roads.length === raw.roads.length && consistency.roads.every((r) => r.pts.trim().split(/\s+/).length === r.handles + 2);
-step('14a. 导入后节点/道路一致性', `节点完全一致=${nodesMatch}（${consistency.markers.length}/${raw.nodes.length}）；道路折线点数=中间点+2：${roadsMatch}`);
+const roadsMatch = consistency.roads.length === raw.roads.length && consistency.roads.every((r) => r.pts.trim().split(/\s+/).length === r.mids + 2);
+const noDots = consistency.roads.every((r) => r.dots === 0);
+step('14a. 导入后节点/道路一致性', `节点完全一致=${nodesMatch}（${consistency.markers.length}/${raw.nodes.length}）；道路折线点数=中间点+2：${roadsMatch}；地图上中间点圆点数=${consistency.roads.map((r) => r.dots).join(',')}（全为 0=${noDots}）`);
 
 await page.click('[data-testid="tab-paths"]');
 await page.waitForTimeout(300);

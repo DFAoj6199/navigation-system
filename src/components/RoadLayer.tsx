@@ -13,7 +13,7 @@ interface RoadLayerProps {
   /** 草稿端点节点（正在绘制时） */
   draftFromNodeId?: string;
   draftToNodeId?: string;
-  /** 是否允许拖动中间点 */
+  /** 是否允许拖动中间点（仅“道路管理”页签为 true） */
   editable: boolean;
   /** 当前寻路结果高亮所经过的道路 id（只读，不修改任何道路数据） */
   highlightedRoadIds: string[];
@@ -148,27 +148,29 @@ export function RoadLayer({
               strokeLinecap="round"
               strokeLinejoin="round"
             />
-            {/* 中间点手柄（可拖动编辑） */}
-            {road.points.map((point, index) => (
-              <circle
-                key={`${road.id}-p-${index}`}
-                cx={point.x}
-                cy={point.y}
-                r={handleR}
-                fill="#ffffff"
-                stroke={isSelected ? '#b45309' : '#0f766e'}
-                strokeWidth={2 / zoom}
-                className={editable ? styles.pointHandle : styles.pointHandleStatic}
-                data-road-point={road.id}
-                data-point-index={index}
-                data-pixel-x={point.x}
-                data-pixel-y={point.y}
-                onPointerDown={(event) => {
-                  if (!editable) return;
-                  onDragPointStart(event, road.id, index);
-                }}
-              />
-            ))}
+            {/* 中间点拖动热区。
+                默认不可见：中间点只是折线的弯折位置，不需要在地图上画成一个个圆点。
+                仅在“道路管理”页签且该道路被选中时显示为淡雅的小手柄，
+                因为拖动中间点只在此时可操作；其余时刻完全不渲染。 */}
+            {editable &&
+              isSelected &&
+              road.points.map((point, index) => (
+                <circle
+                  key={`${road.id}-p-${index}`}
+                  cx={point.x}
+                  cy={point.y}
+                  r={handleR}
+                  fill="#ffffff"
+                  stroke="#b45309"
+                  strokeWidth={2 / zoom}
+                  className={styles.pointHandle}
+                  data-road-point={road.id}
+                  data-point-index={index}
+                  data-pixel-x={point.x}
+                  data-pixel-y={point.y}
+                  onPointerDown={(event) => onDragPointStart(event, road.id, index)}
+                />
+              ))}
           </g>
         );
       })}

@@ -19,7 +19,3 @@
 .pointHandle:active {
   cursor: grabbing;
 }
-
-.pointHandleStatic {
-  pointer-events: none;
-}

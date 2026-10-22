@@ -1924,8 +1924,13 @@ async function main() {
         y: Number(m.getAttribute('data-pixel-y')),
       }));
       const roads = [...document.querySelectorAll('[data-road-line="true"]')].map((g) => ({
+        id: g.getAttribute('data-road-id'),
         pts: g.getAttribute('data-points'),
-        edges: g.querySelectorAll('[data-road-point]').length,
+        // 中间点数取自持久化的数据属性，不能用地图上的手柄圆点数量：
+        // 中间点默认不绘制圆点，手柄只在“道路管理”页签且该道路被选中时出现。
+        midCount: Number(g.getAttribute('data-point-count')),
+        // 地图上不应出现可见的中间点圆点（道路只用线条表示）
+        visibleDots: g.querySelectorAll('circle').length,
       }));
       return { markers, roads };
     });
@@ -1933,14 +1938,32 @@ async function main() {
     const nodesMatch =
       consistency.markers.length === exportedRaw.nodes.length &&
       consistency.markers.every((m) => fileNodeMap.get(m.id) === `${m.x},${m.y}`);
-    // 每条道路的折线点数 = 中间点数 + 2 个端点
+    // 逐点比对：折线点数 = 中间点数 + 2 个端点
     const roadsMatch =
       consistency.roads.length === exportedRaw.roads.length &&
-      consistency.roads.every((r) => r.pts.trim().split(/\s+/).length === r.edges + 2);
+      consistency.roads.every((r) => r.pts.trim().split(/\s+/).length === r.midCount + 2);
+    // 折线顶点坐标必须与导出文件里的道路数据完全一致（端点为节点坐标，其余为中间点坐标）
+    const fileRoadMap = new Map(exportedRaw.roads.map((r) => [r.id, r]));
+    const roadGeomMatch = consistency.roads.every((r) => {
+      const road = fileRoadMap.get(r.id);
+      if (!road) return false;
+      const from = exportedRaw.nodes.find((n) => n.id === road.fromNodeId).point;
+      const to = exportedRaw.nodes.find((n) => n.id === road.toNodeId).point;
+      const expect = [from, ...road.points, to].map((p) => `${p.x},${p.y}`).join(' ');
+      return r.pts.trim() === expect;
+    });
+    // 中间点不应在地图上渲染成圆点
+    const noMidDots = consistency.roads.every((r) => r.visibleDots === 0);
+    const scaleOk = (await page.textContent('[data-testid="project-scale"]')).includes('1.0000');
     record(
       '导入后节点、道路、比例尺数据保持一致',
-      nodesMatch && roadsMatch && (await page.textContent('[data-testid="project-scale"]')).includes('1.0000'),
-      `节点一致=${nodesMatch}（${consistency.markers.length}/${exportedRaw.nodes.length}），道路折线点数=中间点+2：${roadsMatch}，比例尺=${(await page.textContent('[data-testid="project-scale"]')).trim()}，校准=${calibratedP6}`,
+      nodesMatch && roadsMatch && roadGeomMatch && scaleOk,
+      `节点一致=${nodesMatch}（${consistency.markers.length}/${exportedRaw.nodes.length}），道路折线点数=中间点+2：${roadsMatch}，折线坐标与文件逐点一致=${roadGeomMatch}，比例尺=${(await page.textContent('[data-testid="project-scale"]')).trim()}，校准=${calibratedP6}`,
+    );
+    record(
+      '道路中间点不在地图上渲染成圆点，只用线条表示',
+      noMidDots,
+      `各道路可见圆点数=${consistency.roads.map((r) => r.visibleDots).join(',')}（中间点数=${consistency.roads.map((r) => r.midCount).join(',')}），折线仍含全部中间点=${roadGeomMatch}`,
     );
 
     await page.screenshot({ path: path.join(SHOT_DIR, '14-project-import.png') });

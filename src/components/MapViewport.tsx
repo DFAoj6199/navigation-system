@@ -481,7 +481,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
               draftPoints={draft?.points ?? []}
               draftFromNodeId={draft?.fromNodeId}
               draftToNodeId={draft?.toNodeId}
-              editable={mode === 'pan' || mode === 'draw'}
+              editable={activeTab === 'roads' && (mode === 'pan' || mode === 'draw')}
               highlightedRoadIds={search.highlightedRoadIds}
               onSelectRoad={toggleRoadSelection}
               onDragPointStart={handleDragRoadPointStart}
@@ -605,7 +605,7 @@ export function MapViewport({ mode, activeTab }: MapViewportProps) {
               ? '比例尺校准模式：点击地图记录校准点（原始像素坐标）'
               : mode === 'draw'
               ? '绘制模式：在道路上连续单击添加中间点，点“完成绘制”保存'
-              : '拖动模式：按住鼠标拖动平移，滚轮缩放；点击节点/道路可选中，拖动白色圆点可编辑中间点'}
+              : '拖动模式：按住鼠标拖动平移，滚轮缩放；点击节点/道路可选中。在“道路管理”选中道路后可拖动其上的手柄编辑中间点'}
         </span>
       </div>
       {mode === 'add' && (
