@@ -26,6 +26,12 @@ interface MapViewportProps {
    *   draw 点击添加道路中间点
    */
   mode: MapMode;
+  /**
+   * 当前所在的管理页签。
+   * 比例尺校准点只在“比例尺”页签显示；切换到其他页签时暂时隐藏，
+   * 避免校准标记长期遮挡节点与道路，但不影响已保存的比例尺。
+   */
+  activeTab?: string;
 }
 
 const ZOOM_STEP = 1.15;
@@ -40,7 +46,7 @@ const ZOOM_STEP = 1.15;
  *   - 图片与 SVG 节点层都设置 width/height 为原始像素尺寸，并施加同一变换，
  *     所以节点的像素坐标与底图像素严格一一对应，缩放/拖动/改变窗口大小时不会漂移。
  */
-export function MapViewport({ mode }: MapViewportProps) {
+export function MapViewport({ mode, activeTab }: MapViewportProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<ViewportSize>({ width: 0, height: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -76,6 +82,11 @@ export function MapViewport({ mode }: MapViewportProps) {
   const scalePointB = useAppStore((s) => s.scalePointB);
   const scaleNextPoint = useAppStore((s) => s.scaleNextPoint);
   const pickScalePoint = useAppStore((s) => s.pickScalePoint);
+
+  // 校准点只在“比例尺”页签可见：离开该页签即暂时隐藏（比例尺数据本身不受影响）
+  const showScaleLayer = activeTab === 'scale' && Boolean(scalePointA || scalePointB);
+  // 点选只在“比例尺”页签生效，避免隐藏标记后仍在地图上记录校准点
+  const scalePickActive = scalePicking && activeTab === 'scale';
 
   /** 正在拖动的中间点（草稿点或已存道路的中间点） */
   const pointDragRef = useRef<
@@ -207,7 +218,7 @@ export function MapViewport({ mode }: MapViewportProps) {
     if (event.button !== 0 && event.button !== 1) return;
     // 添加节点 / 绘制道路模式下，左键点击交给 click 逻辑处理，不进入平移
     // 校准点选模式下左键用于记录校准点，不进入平移
-    if (scalePicking && event.button === 0) return;
+    if (scalePickActive && event.button === 0) return;
     if ((mode === 'add' || mode === 'draw') && event.button === 0) return;
     const el = canvasRef.current;
     if (!el) return;
@@ -275,7 +286,7 @@ export function MapViewport({ mode }: MapViewportProps) {
     // 只把“未发生拖动的左键抬起”视为一次点击
     const isClick = event.type === 'pointerup' && event.button === 0 && drag === null;
 
-    if (isClick && scalePicking) {
+    if (isClick && scalePickActive) {
       const pixel = toPixel(event.clientX, event.clientY);
       if (!pixel) return;
       const point = { x: Math.round(pixel.x), y: Math.round(pixel.y) };
@@ -431,8 +442,8 @@ export function MapViewport({ mode }: MapViewportProps) {
               endNodeId={endNodeId}
               nodes={nodes}
             />
-            {/* 比例尺校准点与连线 */}
-            {(scalePointA || scalePointB) && (
+            {/* 比例尺校准点与连线：仅在“比例尺”页签显示，切到其他页签暂时隐藏 */}
+            {showScaleLayer && (
               <g data-testid="scale-layer">
                 {scalePointA && scalePointB && (
                   <line
@@ -524,7 +535,7 @@ export function MapViewport({ mode }: MapViewportProps) {
         <span className={styles.statusHint}>
           {mode === 'add'
             ? '点击模式：在地图上单击即可在对应像素位置添加节点'
-            : scalePicking
+            : scalePickActive
               ? '比例尺校准模式：点击地图记录校准点（原始像素坐标）'
               : mode === 'draw'
               ? '绘制模式：在道路上连续单击添加中间点，点“完成绘制”保存'
@@ -536,7 +547,7 @@ export function MapViewport({ mode }: MapViewportProps) {
           ➕ 添加节点模式已开启：单击地图放置节点；完成后请切回“拖动 / 浏览”模式以免误加
         </div>
       )}
-      {scalePicking && (
+      {scalePickActive && (
         <div className={styles.scaleBanner} data-testid="scale-mode-banner">
           📏 比例尺校准中：请在地图上点击{scaleNextPoint === 'a' ? '第 1 个点（A）' : '第 2 个点（B）'}
         </div>

@@ -1065,14 +1065,20 @@ async function main() {
       pxMatchesManual && calShortest.includes(`${calExpectedPx.toFixed(1)} 米`) && calItem.includes(`${calExpectedPx.toFixed(1)} 米`),
       `像素长度=${calExpectedPx}（人工推导 894.4272），最短路径=“${calShortest}”，列表长度=“${calItem}”`,
     );
+    // 已校准后，路径结果不再显示像素数值
+    record(
+      '已校准比例尺后路径结果不再显示像素，只显示路径长度',
+      !calShortest.includes('像素') && !calItem.includes('像素'),
+      `最短路径=“${calShortest}”，列表长度=“${calItem}”`,
+    );
 
     // 道路列表同样显示实际长度
     await page.click('[data-testid="tab-roads"]');
     await page.waitForTimeout(250);
     const roadLenCal = (await page.textContent('[data-testid="road-length"]')).trim();
     record(
-      '道路管理列表显示实际长度（米）与像素',
-      roadLenCal.includes(`${calExpectedPx.toFixed(1)} 米`) && roadLenCal.includes(`${calExpectedPx.toFixed(1)} 像素`),
+      '道路管理列表已校准时只显示实际长度（米），不显示像素',
+      roadLenCal.includes(`${calExpectedPx.toFixed(1)} 米`) && !roadLenCal.includes('像素'),
       `道路长度=“${roadLenCal}”，基准像素长度=${calExpectedPx}`,
     );
 
@@ -1088,10 +1094,10 @@ async function main() {
     // 人工核对：894.4272 像素 × 2 米/像素 = 1788.8544 米 = 1.79 千米
     const doubledKm = (calExpectedPx * 2 / 1000).toFixed(2);
     record(
-      '比例尺改为 2 米/像素后，实际距离翻倍为 1.79 千米（像素长度不变）',
+      '比例尺改为 2 米/像素后，实际距离翻倍为 1.79 千米（且不再显示像素）',
       (ui.ratio ?? '').includes('2.0000') &&
         doubled.includes(`${doubledKm} 千米`) &&
-        doubled.includes(`${calExpectedPx.toFixed(1)} 像素`),
+        !doubled.includes('像素'),
       `比例尺=“${ui.ratio}”，长度=“${doubled}”，人工推导 ${calExpectedPx}×2=${calExpectedPx * 2} 米=${doubledKm} 千米`,
     );
 
@@ -1159,6 +1165,42 @@ async function main() {
       '界面说明了透视变形下仅为近似估算',
       scaleDescText.includes('透视变形') && scaleDescText.includes('近似估算'),
       '校准面板明确标注：假定图片各方向比例一致，存在透视变形时仅为近似估算，不具备测绘级精度',
+    );
+
+    // ---------- 39b. 切换页签时暂时隐藏校准点，回到比例尺页签恢复 ----------
+    const countScaleLayer = async () =>
+      page.evaluate(() => document.querySelectorAll('[data-testid="scale-layer"]').length);
+
+    // 当前在“比例尺”页签，校准点应可见
+    const layerOnScaleTab = await countScaleLayer();
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(220);
+    const layerOnPathsTab = await countScaleLayer();
+    await page.click('[data-testid="tab-roads"]');
+    await page.waitForTimeout(220);
+    const layerOnRoadsTab = await countScaleLayer();
+    await page.click('[data-testid="tab-view"]');
+    await page.waitForTimeout(220);
+    const layerOnViewTab = await countScaleLayer();
+    await page.click('[data-testid="tab-scale"]');
+    await page.waitForTimeout(220);
+    const layerBackOnScaleTab = await countScaleLayer();
+    record(
+      '切换到其他页签时校准点暂时隐藏，回到比例尺页签后恢复显示',
+      layerOnScaleTab === 1 &&
+        layerOnPathsTab === 0 &&
+        layerOnRoadsTab === 0 &&
+        layerOnViewTab === 0 &&
+        layerBackOnScaleTab === 1,
+      `比例尺页签=${layerOnScaleTab}，路径=${layerOnPathsTab}，道路=${layerOnRoadsTab}，查看=${layerOnViewTab}，回到比例尺=${layerBackOnScaleTab}`,
+    );
+
+    // 隐藏校准点不得影响已保存的比例尺
+    const ratioAfterTabSwitch = (await page.textContent('[data-testid="scale-ratio"]')).trim();
+    record(
+      '隐藏校准点不影响已保存的比例尺',
+      ratioAfterTabSwitch === scaleBefore,
+      `切换页签后比例尺=“${ratioAfterTabSwitch}”，期望“${scaleBefore}”`,
     );
 
     await page.screenshot({ path: path.join(SHOT_DIR, '11-scale.png') });

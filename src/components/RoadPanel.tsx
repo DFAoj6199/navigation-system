@@ -271,8 +271,9 @@ export function RoadPanel({ mode, setMode }: RoadPanelProps) {
                       {(() => {
                         const px = polylineLength(buildRoadPolyline(road, from.point, to.point));
                         const meters = pixelsToMeters(px, scale);
+                        // 已校准：只显示实际长度；未校准：只显示像素，绝不混淆
                         return meters !== null
-                          ? `${formatDistance(meters)} / ${px.toFixed(1)} 像素`
+                          ? formatDistance(meters)
                           : `${px.toFixed(1)} 像素`;
                       })()}
                     </span>

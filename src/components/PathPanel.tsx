@@ -13,7 +13,8 @@ import styles from './PathPanel.module.css';
  * 路径搜索面板。
  *
  * 说明：
- * - 比例尺未校准，所有长度均为“原始图像像素”，绝不标注为米；
+ * - 未校准时长度只能是“原始图像像素”，绝不标注为米；
+ * - 已校准时只显示实际长度（米/千米），不再显示像素数值；
  * - 每条道路的长度按完整折线（含全部中间点）累加，不是端点直线距离；
  * - 简单路径可能极多，结果有数量上限；被截断时界面明确标注“非完整结果”。
  */
@@ -94,7 +95,7 @@ export function PathPanel() {
       <p className={styles.desc}>
         只使用已有的<strong>双向</strong>道路。道路长度按<strong>完整折线</strong>（含全部中间点）逐段累加。
         {scale ? (
-          <>已校准比例尺，长度以<strong>米</strong>显示，并同时给出像素值。</>
+          <>已校准比例尺，长度直接以<strong>米/千米</strong>显示（不再显示像素数值）。</>
         ) : (
           <>
             比例尺<strong>未校准</strong>，因此只显示<strong>像素</strong>长度，不代表实际米数；
@@ -233,7 +234,7 @@ export function PathPanel() {
                   </div>
                   <div className={styles.shortestLen} data-testid="shortest-length">
                     {search.shortest.meters !== null
-                      ? `长度 ${formatDistance(search.shortest.meters)}（${formatPixelLength(search.shortest.length)}）`
+                      ? `长度 ${formatDistance(search.shortest.meters)}`
                       : `长度 ${formatPixelLength(search.shortest.length)}`}
                   </div>
                 </div>
@@ -257,7 +258,7 @@ export function PathPanel() {
                     </span>
                     <span className={styles.length} data-testid="path-item-length">
                       {path.meters !== null
-                        ? `${formatDistance(path.meters)} / ${formatPixelLength(path.length)}`
+                        ? formatDistance(path.meters)
                         : formatPixelLength(path.length)}
                     </span>
                   </li>

@@ -143,7 +143,7 @@ export default function App() {
           </div>
 
           <div className={styles.viewport}>
-            <MapViewport mode={mode} />
+            <MapViewport mode={mode} activeTab={tab} />
           </div>
         </main>
       </div>
