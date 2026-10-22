@@ -1615,6 +1615,98 @@ async function main() {
       `箭头标记=${arrowState.bidirectionalMarkers}，草稿箭头=${arrowState.draftArrows}，道路内三角形=${arrowState.polygonInRoads}，道路数=${arrowState.roadCount}，线条完整=${arrowState.linesOk}`,
     );
 
+    // ---------- 47b. 搜索被上限截断时不得误报「当前无路径」 ----------
+    // 回归：真实项目（165 节点/248 道路）上 DFS 在找到第一条路径之前就耗尽
+    // maxExpansions，simple.paths 为空，但 Dijkstra 仍能给出真实最短路径。
+    // 旧逻辑用「paths 为空」判定 no-path，于是面板说「当前无路径」，
+    // 地图却高亮着那条真实的最短路径——自相矛盾。
+    //
+    // 这里用一张程序化生成的「稠密扇出」小图精确复现该分支：
+    // 12 个节点、56 条道路即可让 DFS 在 200001 次扩展处超限，
+    // 而 s 到 t 确实存在简单路径（经 a0）。
+    await clearAllNodes();
+    await addNodeByName(100, 100, '扇出起点');
+    await addNodeByName(900, 900, '扇出终点');
+    const FAN_K = 10;
+    for (let i = 0; i < FAN_K; i += 1) {
+      await addNodeByName(300 + i * 100, 300, `扇出${i}`);
+    }
+    await page.click('[data-testid="view-fit"]');
+    await page.waitForTimeout(250);
+    for (let i = 0; i < FAN_K; i += 1) {
+      await connectNodes('扇出起点', `扇出${i}`);
+    }
+    for (let i = 0; i < FAN_K; i += 1) {
+      for (let j = i + 1; j < FAN_K; j += 1) {
+        await connectNodes(`扇出${i}`, `扇出${j}`);
+      }
+    }
+    await connectNodes('扇出0', '扇出终点');
+
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(250);
+    const fanOpts = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', fanOpts.find((o) => o.t === '扇出起点').v);
+    await page.selectOption('[data-testid="path-end-select"]', fanOpts.find((o) => o.t === '扇出终点').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(2000);
+
+    // 关键断言：此时绝不能出现「当前无路径」，而应给出「搜索未完成」；
+    // 同时最短路径必须可用，且地图高亮与之一致。
+    const trunc = await page.evaluate(() => {
+      const hl = [...document.querySelectorAll('[data-road-line="true"]')]
+        .filter((g) => g.getAttribute('data-road-highlighted') === 'true').length;
+      return {
+        noResult: document.querySelector('[data-testid="path-no-result"]')?.textContent?.trim() ?? null,
+        incomplete: document.querySelector('[data-testid="path-incomplete"]')?.textContent?.trim() ?? null,
+        shortest: document.querySelector('[data-testid="path-shortest"]')?.textContent?.trim() ?? null,
+        highlighted: hl,
+        hasHighlightLine: document.querySelectorAll('[data-testid="road-highlight-line"]').length,
+      };
+    });
+    record(
+      '扩展次数超限时显示“搜索未完成”而非“当前无路径”，且最短路径与地图高亮一致',
+      trunc.noResult === null &&
+        (trunc.incomplete ?? '').includes('搜索未完成') &&
+        (trunc.incomplete ?? '').includes('无法判定是否存在路径') &&
+        trunc.highlighted > 0 &&
+        trunc.hasHighlightLine === trunc.highlighted,
+      `无路径提示=${trunc.noResult ?? '无'}；未完成提示=“${(trunc.incomplete ?? '').slice(0, 30)}…”；高亮道路数=${trunc.highlighted}；高亮虚线数=${trunc.hasHighlightLine}`,
+    );
+
+    // ---------- 47c. 搜索完整穷举且确实不可达时仍是「当前无路径」 ----------
+    // 与 47b 对照：同样是 paths 为空，但这次搜索确实做完了，
+    // 所以必须报「当前无路径」而不是「搜索未完成」。
+    await clearAllNodes();
+    await addNodeByName(200, 200, '孤A');
+    await addNodeByName(800, 200, '孤B');
+    await addNodeByName(1300, 900, '孤C');
+    await page.click('[data-testid="view-fit"]');
+    await page.waitForTimeout(250);
+    await connectNodes('孤A', '孤B');
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(250);
+    const isoOpts = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({ v: o.value, t: o.textContent })),
+    );
+    await page.selectOption('[data-testid="path-start-select"]', isoOpts.find((o) => o.t === '孤A').v);
+    await page.selectOption('[data-testid="path-end-select"]', isoOpts.find((o) => o.t === '孤C').v);
+    await page.click('[data-testid="path-search"]');
+    await page.waitForTimeout(700);
+    const iso = await page.evaluate(() => ({
+      noResult: document.querySelector('[data-testid="path-no-result"]')?.textContent?.trim() ?? null,
+      incomplete: document.querySelector('[data-testid="path-incomplete"]') ? '有' : null,
+      highlighted: [...document.querySelectorAll('[data-road-line="true"]')]
+        .filter((g) => g.getAttribute('data-road-highlighted') === 'true').length,
+    }));
+    record(
+      '穷举完毕且确实不可达时才显示“当前无路径”（与搜索未完成区分开）',
+      iso.noResult === '当前无路径' && iso.incomplete === null && iso.highlighted === 0,
+      `提示=${iso.noResult}；未完成块=${iso.incomplete ?? '无'}；高亮道路数=${iso.highlighted}`,
+    );
+
     // ==========================================================
     // 阶段 6：项目数据保存、导入与异常处理
     // ==========================================================

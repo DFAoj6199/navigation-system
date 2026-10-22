@@ -57,8 +57,15 @@ export interface RoadDraft {
  * 绝不把部分结果当作全部路径展示。
  */
 export interface SearchState {
-  /** 本次搜索的状态：未搜索 / 无路径 / 有结果 / 出错 */
-  status: 'idle' | 'no-path' | 'found' | 'error';
+  /**
+   * 本次搜索的状态：
+   * - idle：尚未搜索
+   * - no-path：确实不存在任何可通行路径
+   * - partial：简单路径搜索被上限截断，尚未完成，既不能断言“无路径”，也不能当作完整结果
+   * - found：至少找到一条简单路径
+   * - error：搜索无法执行
+   */
+  status: 'idle' | 'no-path' | 'partial' | 'found' | 'error';
   /** 错误信息 */
   error?: string;
   /** 简单路径结果 */
@@ -723,9 +730,27 @@ export const useAppStore = create<AppState>((set, get) => ({
     const sameEndpoint = startNodeId === endNodeId;
     const hasAnyPath = simple.result.paths.length > 0;
 
+    /*
+     * 状态判定必须严谨：
+     * - 有简单路径 → found
+     * - 没有简单路径，但搜索被上限截断 → partial（搜索没做完，不能断言“无路径”）
+     * - 没有简单路径，且搜索已穷举完毕 → no-path（确实不可达）
+     *
+     * 关键：大图上 DFS 可能在找到第一条路径之前就耗尽扩展次数，
+     * 此时“简单路径为空”只说明“还没找到”，不说明“不存在”。
+     * 而 Dijkstra 是多项式复杂度，往往仍能给出最短路径——若按旧逻辑
+     * 直接把空结果当作 no-path，就会出现“面板说无路径、地图却高亮着真路”的矛盾。
+     */
+    const simpleComplete = simple.result.complete;
+    const status: 'found' | 'partial' | 'no-path' = hasAnyPath
+      ? 'found'
+      : simpleComplete
+        ? 'no-path'
+        : 'partial';
+
     set({
       search: {
-        status: hasAnyPath ? 'found' : 'no-path',
+        status,
         simple: simple.result,
         shortest: shortest.result.path,
         sameEndpoint,

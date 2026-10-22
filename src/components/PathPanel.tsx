@@ -47,6 +47,14 @@ export function PathPanel() {
     const state = useAppStore.getState().search;
     if (state.status === 'no-path') {
       pushNotice('info', '当前无路径');
+    } else if (state.status === 'partial') {
+      // 搜索没做完：既不能报“无路径”，也不能把已得的少量结果当作完整结果
+      pushNotice(
+        'error',
+        state.simple && state.simple.paths.length > 0
+          ? `搜索未完成（已超出扩展次数上限），仅返回前 ${state.simple.paths.length} 条，不代表全部路径`
+          : '搜索未完成（已超出扩展次数上限），暂时无法确认是否存在路径；请减少节点/道路数量后重试',
+      );
     } else if (state.simple && state.simple.complete) {
       pushNotice('success', `共找到 ${state.simple.paths.length} 条简单路径`);
     } else if (state.simple) {
@@ -75,7 +83,8 @@ export function PathPanel() {
     nodes.find((n) => n.id === search.searchedStartId)?.name ?? '（已删除）';
   const searchedEndName =
     nodes.find((n) => n.id === search.searchedEndId)?.name ?? '（已删除）';
-  const showSearchInfo = search.status === 'found' || search.status === 'no-path';
+  const showSearchInfo =
+    search.status === 'found' || search.status === 'no-path' || search.status === 'partial';
 
   const isHighlighted = (path: PathResult) =>
     path.roadIds.length === search.highlightedRoadIds.length &&
@@ -215,6 +224,20 @@ export function PathPanel() {
           {search.sameEndpoint && (
             <div className={styles.sameBox} data-testid="path-same-endpoint">
               起点与终点相同：按约定返回 1 条仅含该节点、长度为 0 的路径。
+            </div>
+          )}
+
+          {/* 搜索未完成：绝不显示“当前无路径”，避免把“没搜完”误报成“不可达” */}
+          {search.status === 'partial' && (
+            <div className={styles.noPath} data-testid="path-incomplete">
+              <strong>搜索未完成，无法判定是否存在路径。</strong>
+              已经遍历 {search.simple?.expansions ?? 0} 个节点仍超过扩展次数上限（
+              {search.limits.maxExpansions}），为避免页面卡死已停止搜索。
+              {search.shortest && (
+                <>
+                  下方“最短路径”仍然可用，可作为参考。
+                </>
+              )}
             </div>
           )}
 
