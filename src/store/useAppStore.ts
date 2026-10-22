@@ -9,6 +9,13 @@ import {
   roadsAffectedByNodeDeletion,
   validateNewRoad,
 } from '../lib/roads';
+import {
+  DEFAULT_SEARCH_LIMITS,
+  findAllSimplePaths,
+  findShortestPath,
+  type PathResult,
+  type SearchLimits,
+} from '../lib/pathfinding';
 
 /**
  * 应用状态（阶段2：地图显示 + 节点管理 + 双向道路管理）。
@@ -37,6 +44,36 @@ export interface RoadDraft {
   editingRoadId?: string;
 }
 
+/**
+ * 寻路结果状态。
+ *
+ * 关键点：必须区分“完整结果”与“被限制截断的结果”，
+ * 绝不把部分结果当作全部路径展示。
+ */
+export interface SearchState {
+  /** 本次搜索的状态：未搜索 / 无路径 / 有结果 / 出错 */
+  status: 'idle' | 'no-path' | 'found' | 'error';
+  /** 错误信息 */
+  error?: string;
+  /** 简单路径结果 */
+  simple: {
+    paths: PathResult[];
+    truncated: boolean;
+    truncatedReason?: 'maxResults' | 'maxExpansions';
+    complete: boolean;
+    expansions: number;
+  } | null;
+  /** 最短路径结果；null 表示不可达 */
+  shortest: PathResult | null;
+  /** 起终点相同标记 */
+  sameEndpoint: boolean;
+  /** 本次搜索实际使用的限制，便于在界面上明示 */
+  limits: SearchLimits;
+  /** 当前在地图上高亮的路径（点击结果条目后设置） */
+  highlightedRoadIds: string[];
+  highlightedPolyline: PixelPoint[];
+}
+
 interface AppState {
   // ---- 底图 ----
   image: MapImageMeta | null;
@@ -59,6 +96,25 @@ interface AppState {
   // ---- 道路绘制 ----
   /** 当前绘制草稿；null 表示不在绘制中 */
   draft: RoadDraft | null;
+
+  // ---- 寻路 ----
+  /** 起点节点 id */
+  startNodeId: string;
+  /** 终点节点 id */
+  endNodeId: string;
+  /** 寻路结果 */
+  search: SearchState;
+  /** 结果数量上限（用户可调） */
+  searchLimits: SearchLimits;
+  /** 执行搜索：同时计算全部简单路径与最短路径（只读，绝不修改道路） */
+  runSearch: (limits?: Partial<SearchLimits>) => { ok: boolean; error?: string };
+  setStartNodeId: (id: string) => void;
+  setEndNodeId: (id: string) => void;
+  setSearchLimits: (limits: Partial<SearchLimits>) => void;
+  /** 清空搜索结果（修改图数据后调用，避免展示过期结果） */
+  clearSearch: () => void;
+  /** 在地图上高亮某条路径 */
+  highlightPath: (path: PathResult | null) => void;
 
   // ---- 提示 ----
   notices: Notice[];
@@ -112,6 +168,34 @@ const initialView = {
   draft: null,
 } satisfies Partial<AppState>;
 
+/** 初始寻路状态 */
+export function createInitialSearchState(limits: SearchLimits = DEFAULT_SEARCH_LIMITS): SearchState {
+  return {
+    status: 'idle',
+    simple: null,
+    shortest: null,
+    sameEndpoint: false,
+    limits,
+    highlightedRoadIds: [],
+    highlightedPolyline: [],
+  };
+}
+
+const initialSearch = {
+  startNodeId: '',
+  endNodeId: '',
+  search: createInitialSearchState(),
+  searchLimits: DEFAULT_SEARCH_LIMITS,
+} satisfies Partial<AppState>;
+
+/**
+ * 图数据（节点/道路）发生变化时，旧的寻路结果即失效。
+ * 返回一个“清空结果但保留用户设置的上限”的状态片段。
+ */
+function invalidateSearch(state: { searchLimits: SearchLimits }) {
+  return { search: createInitialSearchState(state.searchLimits) };
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   image: null,
   imageUrl: null,
@@ -121,6 +205,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   roads: [],
   notices: [],
   ...initialView,
+  ...initialSearch,
 
   setImage: (meta, objectUrl) => {
     const previousUrl = get().imageUrl;
@@ -133,7 +218,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 换图后旧节点/道路坐标失去意义，明确清空并提示，避免坐标错位
       nodes: [],
       roads: [],
+      startNodeId: '',
+      endNodeId: '',
       ...initialView,
+      ...invalidateSearch(get()),
       notices: get().notices,
     });
   },
@@ -148,7 +236,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       imageHeight: 0,
       nodes: [],
       roads: [],
+      startNodeId: '',
+      endNodeId: '',
       ...initialView,
+      ...invalidateSearch(get()),
       notices: get().notices,
     });
   },
@@ -216,7 +307,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 返回值告知调用方删除了多少条道路，以便给出明确提示。
    */
   deleteNode: (id) => {
-    const { nodes, roads, selectedNodeId, selectedRoadId, draft } = get();
+    const { nodes, roads, selectedNodeId, selectedRoadId, draft, startNodeId, endNodeId } = get();
     const node = nodes.find((n) => n.id === id);
     if (!node) return { ok: false, removedRoads: 0, error: '节点不存在' };
 
@@ -230,6 +321,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       selectedRoadId: selectedRoadId && affectedIds.has(selectedRoadId) ? null : selectedRoadId,
       // 若绘制草稿引用了该节点，草稿直接作废
       draft: draft && (draft.fromNodeId === id || draft.toNodeId === id) ? null : draft,
+      // 起终点被删除时同步清空，避免引用不存在的节点
+      startNodeId: startNodeId === id ? '' : startNodeId,
+      endNodeId: endNodeId === id ? '' : endNodeId,
+      ...invalidateSearch(get()),
     });
     return { ok: true, removedRoads: affected.length };
   },
@@ -347,6 +442,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ),
         draft: null,
         selectedRoadId: existing.id,
+        ...invalidateSearch(get()),
       });
       return { ok: true, roadId: existing.id, replaced: true };
     }
@@ -367,6 +463,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       roads: [...roads, road],
       draft: null,
       selectedRoadId: road.id,
+      ...invalidateSearch(get()),
     });
     return { ok: true, roadId: road.id };
   },
@@ -390,6 +487,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       roads: roads.filter((r) => r.id !== id),
       selectedRoadId: selectedRoadId === id ? null : selectedRoadId,
       draft: draft?.editingRoadId === id ? null : draft,
+      ...invalidateSearch(get()),
     });
   },
 
@@ -410,6 +508,89 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...r, points: r.points.map((p, i) => (i === index ? point : p)) }
           : r,
       ),
+      // 拖动中间点会改变道路像素长度，旧寻路结果随之失效
+      ...invalidateSearch(get()),
+    });
+    return { ok: true };
+  },
+
+  // ---------------- 寻路 ----------------
+
+  setStartNodeId: (id) => {
+    set({ startNodeId: id, ...invalidateSearch(get()) });
+  },
+
+  setEndNodeId: (id) => {
+    set({ endNodeId: id, ...invalidateSearch(get()) });
+  },
+
+  setSearchLimits: (limits) => {
+    const next: SearchLimits = {
+      ...get().searchLimits,
+      ...limits,
+    };
+    set({ searchLimits: next, ...invalidateSearch({ searchLimits: next }) });
+  },
+
+  clearSearch: () => set({ ...invalidateSearch(get()) }),
+
+  highlightPath: (path) =>
+    set({
+      search: {
+        ...get().search,
+        highlightedRoadIds: path ? [...path.roadIds] : [],
+        highlightedPolyline: path ? path.polyline.map((p) => ({ x: p.x, y: p.y })) : [],
+      },
+    }),
+
+  /**
+   * 执行寻路。
+   *
+   * 严格只读：不创建、不修改、不删除任何节点或道路。
+   * 同时产出“全部简单路径”与“Dijkstra 最短路径”。
+   */
+  runSearch: (limits) => {
+    const { nodes, roads, startNodeId, endNodeId, searchLimits } = get();
+    const effectiveLimits: SearchLimits = { ...searchLimits, ...limits };
+
+    if (!startNodeId || !endNodeId) {
+      const error = '请选择起点和终点';
+      set({ search: { ...createInitialSearchState(effectiveLimits), status: 'error', error } });
+      return { ok: false, error };
+    }
+
+    const simple = findAllSimplePaths(nodes, roads, startNodeId, endNodeId, effectiveLimits);
+    if (!simple.ok) {
+      set({
+        search: { ...createInitialSearchState(effectiveLimits), status: 'error', error: simple.error },
+      });
+      return { ok: false, error: simple.error };
+    }
+
+    const shortest = findShortestPath(nodes, roads, startNodeId, endNodeId);
+    if (!shortest.ok) {
+      set({
+        search: { ...createInitialSearchState(effectiveLimits), status: 'error', error: shortest.error },
+      });
+      return { ok: false, error: shortest.error };
+    }
+
+    const sameEndpoint = startNodeId === endNodeId;
+    const hasAnyPath = simple.result.paths.length > 0;
+
+    set({
+      search: {
+        status: hasAnyPath ? 'found' : 'no-path',
+        simple: simple.result,
+        shortest: shortest.result.path,
+        sameEndpoint,
+        limits: effectiveLimits,
+        // 默认高亮最短路径，便于直接在地图上看到结果
+        highlightedRoadIds: shortest.result.path ? [...shortest.result.path.roadIds] : [],
+        highlightedPolyline: shortest.result.path
+          ? shortest.result.path.polyline.map((p) => ({ x: p.x, y: p.y }))
+          : [],
+      },
     });
     return { ok: true };
   },

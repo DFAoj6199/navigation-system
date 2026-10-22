@@ -581,7 +581,337 @@ async function main() {
     const danglingLines = await page.evaluate(() => document.querySelectorAll('[data-road-line="true"]').length);
     record('无悬空道路引用', danglingLines === 0, `剩余道路折线元素=${danglingLines}`);
 
-    // ---------- 21. 控制台无错误 ----------
+    // ==========================================================
+    // 阶段 3：简单路径搜索与最短路径搜索
+    // ==========================================================
+
+    /** 清空所有节点（会级联清除道路） */
+    const clearAllNodes = async () => {
+      await page.click('[data-testid="tab-nodes"]');
+      await page.waitForTimeout(150);
+      for (let i = 0; i < 40; i += 1) {
+        const n = await page.locator('[data-testid="node-item"]').count();
+        if (n === 0) break;
+        page.once('dialog', (d) => d.accept());
+        await page.locator('[data-testid="node-item"]').first().locator('[data-testid="node-delete"]').click();
+        await page.waitForTimeout(90);
+      }
+    };
+
+    const addNodeByName = async (x, y, name) => {
+      await page.click('[data-testid="tab-nodes"]');
+      await page.waitForTimeout(120);
+      await page.fill('[data-testid="input-x"]', String(x));
+      await page.fill('[data-testid="input-y"]', String(y));
+      await page.fill('[data-testid="input-name"]', name);
+      await page.click('[data-testid="add-node-submit"]');
+      await page.waitForTimeout(120);
+    };
+
+    /** 连接两个节点（mids 为折线中间点的原始像素坐标） */
+    const connectNodes = async (fromName, toName, mids = []) => {
+      await page.click('[data-testid="tab-roads"]');
+      await page.waitForTimeout(180);
+      const opts = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="road-from-select"] option')].map((o) => ({
+          v: o.value,
+          t: o.textContent,
+        })),
+      );
+      await page.selectOption('[data-testid="road-from-select"]', opts.find((o) => o.t === fromName).v);
+      await page.selectOption('[data-testid="road-to-select"]', opts.find((o) => o.t === toName).v);
+      await page.click('[data-testid="road-draw-start"]');
+      await page.waitForTimeout(220);
+      const c = await readCamera(page);
+      for (const [x, y] of mids) {
+        const pt = pixelToScreenPoint(c, x, y);
+        await page.mouse.click(pt.x, pt.y);
+        await page.waitForTimeout(100);
+      }
+      await page.click('[data-testid="road-draw-commit"]');
+      await page.waitForTimeout(200);
+    };
+
+    /** 执行一次搜索并读取界面上的全部结果 */
+    const runPathSearch = async (startName, endName, maxResults) => {
+      await page.click('[data-testid="tab-paths"]');
+      await page.waitForTimeout(180);
+      const opts = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="path-start-select"] option')].map((o) => ({
+          v: o.value,
+          t: o.textContent,
+        })),
+      );
+      await page.selectOption('[data-testid="path-start-select"]', opts.find((o) => o.t === startName).v);
+      await page.selectOption('[data-testid="path-end-select"]', opts.find((o) => o.t === endName).v);
+      if (maxResults !== undefined) {
+        await page.fill('[data-testid="path-max-results"]', String(maxResults));
+      }
+      await page.click('[data-testid="path-search"]');
+      await page.waitForTimeout(450);
+      return page.evaluate(() => {
+        const text = (sel) => document.querySelector(sel)?.textContent?.trim() ?? null;
+        return {
+          count: text('[data-testid="path-count"]'),
+          noPath: text('[data-testid="path-no-result"]'),
+          completeness: text('[data-testid="path-completeness"]'),
+          completeAttr: document.querySelector('[data-testid="path-completeness"]')?.getAttribute('data-complete') ?? null,
+          truncatedNote: text('[data-testid="path-truncated-note"]'),
+          sameEndpoint: !!document.querySelector('[data-testid="path-same-endpoint"]'),
+          shortest: text('[data-testid="shortest-sequence"]'),
+          unit: text('[data-testid="length-unit"]'),
+          error: text('[data-testid="path-error"]'),
+          items: [...document.querySelectorAll('[data-testid="path-item"]')].map((li) => ({
+            seq: li.querySelector('[data-testid="path-sequence"]')?.textContent?.trim(),
+            len: li.querySelector('[data-testid="path-item-length"]')?.textContent?.trim(),
+          })),
+        };
+      });
+    };
+
+    // ---------- 22. ① 只有一条道路的简单图 ----------
+    // A(100,100) - C(400,500)：人工推导长度 = √(300²+400²) = 500
+    await clearAllNodes();
+    await addNodeByName(100, 100, 'A1');
+    await addNodeByName(400, 500, 'C1');
+    await connectNodes('A1', 'C1');
+    let r = await runPathSearch('A1', 'C1');
+    record(
+      '① 单道路图：1 条路径，长度 500 像素',
+      r.count === '共 1 条路径' &&
+        r.items.length === 1 &&
+        r.items[0].seq === 'A1 -> C1' &&
+        r.items[0].len === '500.0 像素' &&
+        r.completeness?.includes('完整结果'),
+      `数量=${r.count}，序列=${r.items[0]?.seq}，长度=${r.items[0]?.len}，完整性=${r.completeness}`,
+    );
+
+    // 单位必须是像素，不能出现“米”
+    const allText = await page.evaluate(() => document.body.innerText);
+    const meterMentions = (allText.match(/\d+\s*米/g) ?? []).length;
+    record(
+      '长度单位标注为像素，未出现“米”',
+      r.unit?.includes('像素') && meterMentions === 0,
+      `单位标签=“${r.unit}”，页面中“N 米”出现次数=${meterMentions}`,
+    );
+
+    // ---------- 23. ② 两条不同路线的分叉图 ----------
+    // A(100,400) -> B(400,200) -> D(700,400)；A -> C(400,600) -> D
+    // 人工推导：每条 = √(300²+200²)×2 = 360.555×2 = 721.11
+    await clearAllNodes();
+    await addNodeByName(100, 400, 'A2');
+    await addNodeByName(400, 200, 'B2');
+    await addNodeByName(400, 600, 'C2');
+    await addNodeByName(700, 400, 'D2');
+    await connectNodes('A2', 'B2');
+    await connectNodes('B2', 'D2');
+    await connectNodes('A2', 'C2');
+    await connectNodes('C2', 'D2');
+    r = await runPathSearch('A2', 'D2');
+    const forkSeqs = r.items.map((i) => i.seq).sort();
+    record(
+      '② 分叉图：恰好 2 条路径，长度各 721.1 像素',
+      r.count === '共 2 条路径' &&
+        JSON.stringify(forkSeqs) === JSON.stringify(['A2 -> B2 -> D2', 'A2 -> C2 -> D2']) &&
+        r.items.every((i) => i.len === '721.1 像素'),
+      `数量=${r.count}，序列=${forkSeqs.join(' / ')}，长度=${r.items.map((i) => i.len).join(' / ')}`,
+    );
+
+    // ---------- 24. ③ 存在环路的图 ----------
+    // A(100,100) B(400,100) C(700,700) D(100,700)，外环 A-B-C-D-A 另加对角线 A-C
+    // 人工推导 A->C 的简单路径共 3 条：
+    //   A->C 直连     = √(600²+600²) = 848.528
+    //   A->B->C       = 300 + √(300²+600²) = 300 + 670.820 = 970.820
+    //   A->D->C       = D(100,700)->A(100,100) 距离 600，D(100,700)->C(700,700) 距离 600 → 1200
+    await clearAllNodes();
+    await addNodeByName(100, 100, 'A3');
+    await addNodeByName(400, 100, 'B3');
+    await addNodeByName(700, 700, 'C3');
+    await addNodeByName(100, 700, 'D3');
+    await connectNodes('A3', 'B3');
+    await connectNodes('B3', 'C3');
+    await connectNodes('C3', 'D3');
+    await connectNodes('D3', 'A3');
+    await connectNodes('A3', 'C3');
+    r = await runPathSearch('A3', 'C3');
+    const loopSeqs = r.items.map((i) => i.seq);
+    record(
+      '③ 环路图：A->C 共 3 条简单路径且不含重复节点',
+      r.count === '共 3 条路径' &&
+        JSON.stringify(loopSeqs) ===
+          JSON.stringify(['A3 -> C3', 'A3 -> B3 -> C3', 'A3 -> D3 -> C3']) &&
+        r.items.every((i) => i.seq.split(' -> ').length === new Set(i.seq.split(' -> ')).size),
+      `数量=${r.count}，序列=${loopSeqs.join(' / ')}`,
+    );
+    record(
+      '③ 环路图：最短路径为直连 A3 -> C3（848.5 像素）',
+      r.shortest === 'A3 -> C3' && r.items[0]?.len === '848.5 像素',
+      `最短路径=${r.shortest}，最短长度=${r.items[0]?.len}`,
+    );
+
+    // ---------- 25. ④ 起终点不连通 ----------
+    await clearAllNodes();
+    await addNodeByName(100, 100, 'A4');
+    await addNodeByName(400, 100, 'B4');
+    await addNodeByName(900, 900, 'C4');
+    await connectNodes('A4', 'B4');
+    r = await runPathSearch('A4', 'C4');
+    record(
+      '④ 不连通图：显示“当前无路径”且无任何结果条目',
+      r.noPath === '当前无路径' && r.items.length === 0 && r.count === null,
+      `提示=“${r.noPath}”，结果条目数=${r.items.length}`,
+    );
+
+    // ---------- 26. ⑤ 起点与终点相同 ----------
+    r = await runPathSearch('A4', 'A4');
+    record(
+      '⑤ 起终点相同：稳定返回 1 条零长度路径并给出说明',
+      r.sameEndpoint === true &&
+        r.count === '共 1 条路径' &&
+        r.items.length === 1 &&
+        r.items[0].seq === 'A4' &&
+        r.items[0].len === '0.0 像素',
+      `说明框=${r.sameEndpoint}，数量=${r.count}，序列=${r.items[0]?.seq}，长度=${r.items[0]?.len}`,
+    );
+
+    // ---------- 27. ⑥ 多中间折线点、但节点连接关系相同 ----------
+    // 两张图节点与连接完全相同（A6-B6 与 A6-C6-B6），只有 A6-B6 带 3 个中间点
+    // 人工推导 A6-B6 折线：A(100,100)->(200,300)->(400,400)->(600,300)->B(700,100)
+    //   4 段，每段 √(100²+200²)=223.607，合计 894.428 → 894.4
+    // A6->C6->B6 = 500 + 500 = 1000
+    await clearAllNodes();
+    await addNodeByName(100, 100, 'A6');
+    await addNodeByName(700, 100, 'B6');
+    await addNodeByName(400, 500, 'C6');
+    await connectNodes('A6', 'B6', [[200, 300], [400, 400], [600, 300]]);
+    await connectNodes('A6', 'C6');
+    await connectNodes('C6', 'B6');
+    r = await runPathSearch('A6', 'B6');
+    record(
+      '⑥ 多中间点：节点序列为 A6->B6，长度按 4 段折线累加 = 894.4（不是直线 600）',
+      r.count === '共 2 条路径' &&
+        r.items[0]?.seq === 'A6 -> B6' &&
+        r.items[0]?.len === '894.4 像素' &&
+        r.items[1]?.seq === 'A6 -> C6 -> B6' &&
+        r.items[1]?.len === '1000.0 像素',
+      `路径1=${r.items[0]?.seq}(${r.items[0]?.len})，路径2=${r.items[1]?.seq}(${r.items[1]?.len})；端点直线距离为 600`,
+    );
+    record(
+      '⑥ 含中间点的道路决定了最短路径选择（894.4 < 1000）',
+      r.shortest === 'A6 -> B6',
+      `最短路径=${r.shortest}`,
+    );
+
+    // ---------- 28. 结果数量保护与完整性标注 ----------
+    // K6（6 节点两两相连）：A->B 的简单路径数 = 1+4+12+24+24 = 65（人工推导）
+    await clearAllNodes();
+    const k6 = ['A7', 'B7', 'C7', 'D7', 'E7', 'F7'];
+    for (let i = 0; i < k6.length; i += 1) {
+      await addNodeByName(150 + i * 180, 200 + (i % 2) * 400, k6[i]);
+    }
+    for (let i = 0; i < k6.length; i += 1) {
+      for (let j = i + 1; j < k6.length; j += 1) {
+        await connectNodes(k6[i], k6[j]);
+      }
+    }
+    r = await runPathSearch('A7', 'B7', 1000);
+    record(
+      'K6 稠密图：A7->B7 恰好 65 条简单路径（人工推导 1+4+12+24+24）',
+      r.count === '共 65 条路径' && r.items.length === 65 && r.completeAttr === 'true',
+      `数量=${r.count}，条目数=${r.items.length}，完整性=${r.completeness}`,
+    );
+
+    r = await runPathSearch('A7', 'B7', 5);
+    record(
+      '达到结果上限时明确标注“非完整结果”而非谎称全部',
+      r.count === '共 5 条路径' &&
+        r.items.length === 5 &&
+        r.completeAttr === 'false' &&
+        r.completeness?.includes('非完整') &&
+        r.truncatedNote?.includes('并非全部路径'),
+      `数量=${r.count}，完整性=“${r.completeness}”，说明=“${r.truncatedNote}”`,
+    );
+
+    // ---------- 29. 搜索不修改图数据 ----------
+    const graphBeforeSearch = await page.evaluate(() => ({
+      nodes: document.querySelectorAll('[data-node-marker]').length,
+      roads: document.querySelectorAll('[data-road-line="true"]').length,
+    }));
+    await runPathSearch('A7', 'F7', 50);
+    const graphAfterSearch = await page.evaluate(() => ({
+      nodes: document.querySelectorAll('[data-node-marker]').length,
+      roads: document.querySelectorAll('[data-road-line="true"]').length,
+    }));
+    record(
+      '搜索不会增删改任何节点或道路',
+      graphBeforeSearch.nodes === graphAfterSearch.nodes && graphBeforeSearch.roads === graphAfterSearch.roads,
+      `搜索前 节点=${graphBeforeSearch.nodes}/道路=${graphBeforeSearch.roads}，搜索后 节点=${graphAfterSearch.nodes}/道路=${graphAfterSearch.roads}`,
+    );
+
+    // ---------- 30. 高亮路线与道路严格对齐（缩放/拖动后仍对齐） ----------
+    const measureHighlightAlignment = async () =>
+      page.evaluate(() => {
+        const g = document.querySelector('[data-testid="path-highlight"]');
+        if (!g) return { ok: false, err: Infinity, detail: '未找到高亮层' };
+        const line = g.querySelector('polyline');
+        const m = line.getScreenCTM();
+        const map = (x, y) => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f });
+        const pts = line
+          .getAttribute('points')
+          .trim()
+          .split(/\s+/)
+          .map((s) => s.split(',').map(Number))
+          .map(([x, y]) => ({ px: x, py: y, ...map(x, y) }));
+        const markers = [...document.querySelectorAll('[data-node-marker]')].map((mk) => {
+          const c = mk.querySelector('circle:not([fill="none"])');
+          const b = c.getBoundingClientRect();
+          return {
+            px: Number(mk.getAttribute('data-pixel-x')),
+            py: Number(mk.getAttribute('data-pixel-y')),
+            cx: b.left + b.width / 2,
+            cy: b.top + b.height / 2,
+          };
+        });
+        const errs = [];
+        for (const pt of [pts[0], pts[pts.length - 1]]) {
+          const mk = markers.find((x) => x.px === pt.px && x.py === pt.py);
+          if (!mk) {
+            errs.push('端点未与节点重合');
+            continue;
+          }
+          errs.push(Math.hypot(pt.x - mk.cx, pt.y - mk.cy));
+        }
+        const numeric = errs.filter((e) => typeof e === 'number');
+        const err = numeric.length ? Math.max(...numeric) : Infinity;
+        return { ok: errs.length === 2 && err < 1.5, err, detail: errs.join(',') };
+      });
+
+    await page.click('[data-testid="tab-paths"]');
+    await page.waitForTimeout(150);
+    const hlBefore = await measureHighlightAlignment();
+    const cZoom = await readCamera(page);
+    await page.mouse.move(cZoom.canvasLeft + 500, cZoom.canvasTop + 300);
+    for (let i = 0; i < 3; i += 1) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(80);
+    }
+    await page.waitForTimeout(250);
+    const hlAfterZoom = await measureHighlightAlignment();
+    const cDrag = await readCamera(page);
+    await page.mouse.move(cDrag.canvasLeft + 500, cDrag.canvasTop + 300);
+    await page.mouse.down();
+    await page.mouse.move(cDrag.canvasLeft + 380, cDrag.canvasTop + 220, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    const hlAfterDrag = await measureHighlightAlignment();
+    record(
+      '高亮路线在缩放/拖动后仍与节点严格对齐',
+      hlBefore.ok && hlAfterZoom.ok && hlAfterDrag.ok,
+      `缩放前=${hlBefore.err.toFixed(3)}px，缩放后=${hlAfterZoom.err.toFixed(3)}px，拖动后=${hlAfterDrag.err.toFixed(3)}px`,
+    );
+    await page.screenshot({ path: path.join(SHOT_DIR, '10-paths.png') });
+
+    // ---------- 31. 控制台无错误 ----------
     const relevantErrors = consoleErrors.filter((e) => !e.includes('favicon'));
     record('浏览器控制台无 JS 错误', relevantErrors.length === 0, relevantErrors.length ? relevantErrors.join(' | ') : '无错误');
   } finally {

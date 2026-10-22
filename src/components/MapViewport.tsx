@@ -11,6 +11,7 @@ import {
 } from '../lib/viewport';
 import type { ViewportSize } from '../lib/viewport';
 import { NODE_TYPE_COLORS } from '../lib/constants';
+import type { MapNode, PixelPoint } from '../types';
 import { RoadLayer } from './RoadLayer';
 import styles from './MapViewport.module.css';
 
@@ -55,6 +56,9 @@ export function MapViewport({ mode }: MapViewportProps) {
   const selectedNodeId = useAppStore((s) => s.selectedNodeId);
   const selectedRoadId = useAppStore((s) => s.selectedRoadId);
   const draft = useAppStore((s) => s.draft);
+  const search = useAppStore((s) => s.search);
+  const startNodeId = useAppStore((s) => s.startNodeId);
+  const endNodeId = useAppStore((s) => s.endNodeId);
   const camera = useAppStore((s) => s.camera);
   const viewInitialized = useAppStore((s) => s.viewInitialized);
   const setCamera = useAppStore((s) => s.setCamera);
@@ -402,6 +406,14 @@ export function MapViewport({ mode }: MapViewportProps) {
               onDragPointStart={handleDragRoadPointStart}
               onDragDraftPointStart={handleDragDraftPointStart}
             />
+            {/* 寻路结果高亮：与底图共用同一 transform，缩放拖动严格对齐 */}
+            <PathHighlightLayer
+              polyline={search.highlightedPolyline}
+              zoom={camera.zoom}
+              startNodeId={startNodeId}
+              endNodeId={endNodeId}
+              nodes={nodes}
+            />
             {nodes.map((node) => {
               const isSelected = node.id === selectedNodeId;
               // 标记尺寸随缩放反向补偿，保持屏幕上大小恒定、易点击
@@ -481,5 +493,75 @@ export function MapViewport({ mode }: MapViewportProps) {
         </div>
       )}
     </div>
+  );
+}
+
+interface PathHighlightLayerProps {
+  polyline: PixelPoint[];
+  zoom: number;
+  startNodeId: string;
+  endNodeId: string;
+  nodes: MapNode[];
+}
+
+/**
+ * 寻路结果高亮层。
+ *
+ * 点坐标全部是原始图片像素，与底图共用同一个 transform，
+ * 因此缩放、拖动时高亮路线始终贴合道路，不会漂移。
+ * 线宽/标记尺寸按 1/zoom 反向补偿，保持屏幕上大小恒定。
+ */
+function PathHighlightLayer({ polyline, zoom, startNodeId, endNodeId, nodes }: PathHighlightLayerProps) {
+  if (polyline.length < 2) {
+    // 起终点相同（零长度路径）：只标出起终点，不画线
+    if (startNodeId && startNodeId === endNodeId) {
+      const node = nodes.find((n) => n.id === startNodeId);
+      if (!node) return null;
+      return (
+        <g data-testid="path-highlight">
+          <circle
+            cx={node.point.x}
+            cy={node.point.y}
+            r={14 / zoom}
+            fill="none"
+            stroke="#7c3aed"
+            strokeWidth={3 / zoom}
+            strokeDasharray={`${4 / zoom} ${3 / zoom}`}
+          />
+        </g>
+      );
+    }
+    return null;
+  }
+
+  const pointsAttr = polyline.map((p) => `${p.x},${p.y}`).join(' ');
+  const first = polyline[0];
+  const last = polyline[polyline.length - 1];
+
+  return (
+    <g data-testid="path-highlight" data-point-count={polyline.length} data-points={pointsAttr}>
+      {/* 外发光底色，保证在任意底图上都清晰可见 */}
+      <polyline
+        points={pointsAttr}
+        fill="none"
+        stroke="#ffffff"
+        strokeWidth={12 / zoom}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={0.85}
+      />
+      <polyline
+        points={pointsAttr}
+        fill="none"
+        stroke="#7c3aed"
+        strokeWidth={7 / zoom}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeDasharray={`${16 / zoom} ${7 / zoom}`}
+      />
+      {/* 起点/终点标记 */}
+      <circle cx={first.x} cy={first.y} r={11 / zoom} fill="#7c3aed" stroke="#ffffff" strokeWidth={3 / zoom} data-highlight="start" />
+      <circle cx={last.x} cy={last.y} r={11 / zoom} fill="#db2777" stroke="#ffffff" strokeWidth={3 / zoom} data-highlight="end" />
+    </g>
   );
 }

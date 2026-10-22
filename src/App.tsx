@@ -5,12 +5,13 @@ import type { MapMode } from './components/MapViewport';
 import { NodeAddPanel } from './components/NodeAddPanel';
 import { NodeList } from './components/NodeList';
 import { RoadPanel } from './components/RoadPanel';
+import { PathPanel } from './components/PathPanel';
 import { NoticeBar } from './components/NoticeBar';
 import { useAppStore } from './store/useAppStore';
 import styles from './App.module.css';
 
-/** 页面管理区域：普通查看 / 节点管理 / 道路管理 */
-export type ManageTab = 'view' | 'nodes' | 'roads';
+/** 页面管理区域：普通查看 / 节点管理 / 道路管理 / 路径搜索 */
+export type ManageTab = 'view' | 'nodes' | 'roads' | 'paths';
 
 export default function App() {
   const [mode, setMode] = useState<MapMode>('pan');
@@ -33,7 +34,7 @@ export default function App() {
       <header className={styles.header}>
         <div>
           <h1 className={styles.title}>天河体育中心周边地图可视化导航系统</h1>
-          <p className={styles.subtitle}>阶段 2 · 双向道路管理与折线绘制</p>
+          <p className={styles.subtitle}>阶段 3 · 简单路径与最短路径搜索</p>
         </div>
         <div className={styles.badgeGroup}>
           <span className={[styles.badge, image ? styles.badgeOk : styles.badgeMuted].join(' ')}>
@@ -52,6 +53,7 @@ export default function App() {
                 { key: 'view', label: '查看模式' },
                 { key: 'nodes', label: '节点管理' },
                 { key: 'roads', label: '道路管理' },
+                { key: 'paths', label: '路径搜索' },
               ] as Array<{ key: ManageTab; label: string }>
             ).map((item) => (
               <button
@@ -85,6 +87,7 @@ export default function App() {
           {tab === 'nodes' && <NodeAddPanel />}
           {tab === 'nodes' && <NodeList />}
           {tab === 'roads' && <RoadPanel mode={mode} setMode={setMode} />}
+          {tab === 'paths' && <PathPanel />}
           {tab === 'view' && (
             <div className={styles.viewInfo} data-testid="view-mode-info">
               <p>当前为查看模式，节点与道路管理列表已隐藏。</p>
