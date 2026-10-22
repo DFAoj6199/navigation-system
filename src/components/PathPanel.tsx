@@ -251,7 +251,7 @@ export function PathPanel() {
 
               {search.shortest && !search.sameEndpoint && (
                 <div className={styles.shortestBox} data-testid="path-shortest">
-                  <div className={styles.shortestTitle}>最短路径（Dijkstra）</div>
+                  <div className={styles.shortestTitle}>最短路径</div>
                   <div className={styles.shortestSeq} data-testid="shortest-sequence">
                     {formatNodeSequence(search.shortest.nodeIds, nodes)}
                   </div>
