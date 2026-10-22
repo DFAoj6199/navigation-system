@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node e2e/verify.mjs"
+    "test:e2e": "node e2e/verify.mjs",
+    "test:flow": "node e2e/fullflow.mjs"
   },
   "dependencies": {
     "react": "^19.3.1",
